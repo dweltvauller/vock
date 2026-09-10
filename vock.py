@@ -31,16 +31,25 @@ FOLDER STRUCTURE (all created automatically)
   ./unknown.txt   ← generated: words not recognized by the dictionary
   ./dat/vock.dat  ← generated: ready-to-install Fallout 2 DAT archive
 
+  The above is the "flat" layout. With `layout = data` in vock.cfg the project
+  is instead an RPU-shaped, sparse data/ tree: source MSGs are read from
+  data/text/<lang>/**/*.msg, generated speech (acm/lip/txt) is written into
+  data/sound/speech/<folder>/, and the DAT is packed from data/** verbatim.
+  wav/ and textgrid/ stay top-level as rebuild metadata. Floats
+  (float_filter.cfg) and per-NPC combat barks (combat_filter.cfg) are ACM-only
+  and go to vock_floats.dat / vock_combat.dat; MSGs listed in [acm_only] (e.g.
+  pipboy → holodisk narration) are ACM-only too and stay in the main DAT.
+
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 STEPS  (run with --steps or skip with --skip)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-  msg   Parse .MSG → individual .txt files in txt/
+  msg   Parse .MSG → individual .txt files (txt/, or data/sound/speech/<folder>/)
   wav   Convert audio/ → standardised 22050 Hz mono 16-bit in wav/
   acm   wav/ → ACM via snd2acm.exe
-  mfa   MFA forced alignment → textgrid/
-  lip   textgrid/ → lip/
-  dat   Pack msg/ + acm/ + lip/ + txt/ + scripts/ + art/ → dat/vock.dat
+  mfa   MFA forced alignment → textgrid/   (ACM-only stems skipped)
+  lip   textgrid/ → lip/                   (ACM-only stems skipped)
+  dat   Pack the source tree + acm/lip/txt → dat/vock.dat (+ float/combat DATs)
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 USAGE
@@ -112,7 +121,13 @@ if not _parser.read(_CONFIG_PATH, encoding="utf-8"):
 config = {
     "language":     _parser.get("general", "language"),
     "project_root": _parser.get("general", "project_root", fallback="./"),
+    "layout":       _parser.get("general", "layout", fallback="flat").strip().lower(),
     "paths":    dict(_parser["paths"]),
+    "acm_only_msgs": {
+        tok.lower()
+        for tok in _parser.get("acm_only", "msgs", fallback="").replace(",", " ").split()
+        if tok.strip()
+    },
     "settings": {
         "mfa_env": _parser.get("settings", "mfa_env"),
         "lufs":    _parser.getfloat("settings", "lufs"),
@@ -158,6 +173,15 @@ LANG_ENCODING: dict[str, str] = {
 def lang_enc(language: str) -> str:
     """Return the Windows code page for MSG/TXT files in the given language."""
     return LANG_ENCODING.get(language, "cp1252")
+
+#: Maps --language value → data/text/<dir> folder name. Only 'arpabet' differs:
+#: it is English text aligned with the ARPAbet phoneme model, so its MSGs live
+#: under data/text/english/. Every other language maps to itself.
+_TEXT_DIR_LANG: dict[str, str] = {"arpabet": "english"}
+
+def text_dir_lang(language: str) -> str:
+    """Return the data/text/<dir> folder name for the given --language value."""
+    return _TEXT_DIR_LANG.get(language, language)
 
 def load_phoneme_module(mfa_name: str):
     """
@@ -245,10 +269,11 @@ def filter_by_prefix(items: list, include: set[str], key=lambda x: x[0]) -> list
             if any(key(it).lower().startswith(p) for p in prefixes)]
 
 
-def load_float_ranges(float_file: str | None) -> dict[str, list[tuple[int, int]]]:
+def load_ranges(range_file: str | None) -> dict[str, list[tuple[int, int]]]:
     """
-    Read float_filter.cfg (or any path set in config["paths"]["float_filter"]).
-    Returns {PREFIX: [(start, end), …]} mapping float audio-tag-number ranges per NPC prefix.
+    Read a per-NPC tag-range filter file (float_filter.cfg, combat_filter.cfg, or
+    any path set under config["paths"]).
+    Returns {PREFIX: [(start, end), …]} mapping audio-tag-number ranges per NPC prefix.
     Returns an empty dict when the file is absent or unset.
 
     File format: PREFIX  start-end  (# comments, blank lines ignored)
@@ -257,9 +282,9 @@ def load_float_ranges(float_file: str | None) -> dict[str, list[tuple[int, int]]
     Numbers refer to the numeric suffix of the audio tag, not the MSG line number.
     """
     result: dict[str, list[tuple[int, int]]] = {}
-    if not float_file or not os.path.isfile(float_file):
+    if not range_file or not os.path.isfile(range_file):
         return result
-    with open(float_file, encoding="utf-8") as fh:
+    with open(range_file, encoding="utf-8") as fh:
         for raw in fh:
             token = raw.split("#", 1)[0].strip()
             if not token:
@@ -277,36 +302,39 @@ def load_float_ranges(float_file: str | None) -> dict[str, list[tuple[int, int]]
                         lo, hi = chunk.split("-", 1)
                         result.setdefault(prefix, []).append((int(lo.strip()), int(hi.strip())))
                     except ValueError:
-                        print(f"  [warn] float_filter.cfg: invalid range '{chunk}' for '{prefix}' — skipping")
+                        print(f"  [warn] {os.path.basename(range_file)}: invalid range '{chunk}' for '{prefix}' — skipping")
                 else:
                     try:
                         n = int(chunk)
                         result.setdefault(prefix, []).append((n, n))
                     except ValueError:
-                        print(f"  [warn] float_filter.cfg: invalid entry '{chunk}' for '{prefix}' — skipping")
+                        print(f"  [warn] {os.path.basename(range_file)}: invalid entry '{chunk}' for '{prefix}' — skipping")
     return result
 
 
-def is_float_line(tag: str, float_map: dict) -> bool:
-    """Return True if this line should be treated as a float (ACM only, no LIP).
+def in_ranges(tag: str, range_map: dict) -> bool:
+    """Return True if *tag*'s numeric suffix falls in a range from *range_map*.
+
+    Used to classify a line as ACM-only (no LIP): float_filter.cfg for ambient
+    floats, combat_filter.cfg for per-NPC combat barks.
 
     Matching is done on the numeric suffix of the audio tag (e.g. 'eric3' → 3),
-    not the MSG line number, so ranges in float_filter.cfg are version-stable.
+    not the MSG line number, so the ranges are version-stable.
 
     Prefix matching uses startswith (longest key first), mirroring filter_by_prefix,
     so digit-ending prefixes like 'ahs7' are handled correctly — e.g. 'ahs739' maps
     to prefix 'ahs7' with suffix '39', not prefix 'ahs' with suffix '739'.
     """
-    if not float_map:
+    if not range_map:
         return False
     tag_lower = tag.lower()
-    for prefix in sorted(float_map, key=len, reverse=True):
+    for prefix in sorted(range_map, key=len, reverse=True):
         if tag_lower.startswith(prefix):
             suffix = tag_lower[len(prefix):]
             if not suffix.isdigit():
                 break
             tag_num = int(suffix)
-            for lo, hi in float_map[prefix]:
+            for lo, hi in range_map[prefix]:
                 if lo <= tag_num <= hi:
                     return True
             break
@@ -666,6 +694,40 @@ def _npc_folder(stem: str) -> str:
     """Derive the NPC folder from a stem like mor1 → mor."""
     return re.sub(r"\d+$", "", stem).lower()
 
+def speech_folder(stem: str, src_msg: str | None, acm_only_msgs: set[str]) -> str:
+    """sound/speech/<folder> for an audio stem.
+
+    Lines from an ACM-only MSG (e.g. pipboy.msg → holodisk narration) use the
+    MSG basename as the folder; every other line uses the NPC prefix, so per-NPC
+    combat barks land in that NPC's own folder alongside their dialogue.
+    """
+    if src_msg:
+        base = os.path.splitext(os.path.basename(src_msg))[0].lower()
+        if base in acm_only_msgs:
+            return base
+    return _npc_folder(stem)
+
+def collect_data_tree_entries(data_root: str, exclude_stems: set[str] | None = None):
+    """Build [(dat_path, local_path), …] by walking an RPU-shaped data/ tree
+    verbatim — the on-disk layout *is* the DAT layout.
+
+    exclude_stems: speech stems (filename without extension) to leave out, so the
+    float / combat overlays can carry them instead of the main DAT.
+    """
+    entries = []
+    exclude = {s.lower() for s in (exclude_stems or ())}
+    if not os.path.isdir(data_root):
+        return entries
+    for root, _dirs, files in os.walk(data_root):
+        for f in sorted(files):
+            local_path = os.path.join(root, f)
+            rel = os.path.relpath(local_path, data_root).replace(os.sep, "\\")
+            if exclude and rel.lower().startswith("sound\\speech\\"):
+                if os.path.splitext(f)[0].lower() in exclude:
+                    continue
+            entries.append((rel, local_path))
+    return entries
+
 def collect_dat_entries(msg_paths, acm_dir, lip_dir, txt_dir,
                         include_acm=True, only_stems=None,
                         include_msg=True, discover_from="lip",
@@ -1024,30 +1086,116 @@ def main():
     # Every paths entry is resolved against config["project_root"] (default "./"),
     # so pointing project_root at another project's folder retargets the whole
     # pipeline without touching anything else here.
-    paths = config["paths"]
-    msgdir      = resolve_path(paths["msg"])
+    paths  = config["paths"]
+    layout = config.get("layout", "flat")
+    acm_only_msgs = config.get("acm_only_msgs", set())
+
     audiodir    = resolve_path(paths["audio"])
-    txtdir      = resolve_path(paths["txt"])
     wavdir      = resolve_path(paths["wav"])
-    acmdir      = resolve_path(paths["acm"])
     textgriddir = resolve_path(paths["textgrid"])
-    lipdir      = resolve_path(paths["lip"])
     datfile          = resolve_path(paths["dat"])
     float_datfile    = resolve_path(paths.get("float_dat", "./dat/vock_floats.dat"))
-    intdir           = resolve_path(paths.get("scripts", "./scripts"))
-    artdir           = resolve_path(paths.get("art", "./art"))
+    combat_datfile   = resolve_path(paths.get("combat_dat", "./dat/vock_combat.dat"))
     snd2acm_cfg      = resolve_path(paths["snd2acm"])
     npc_filter_file  = resolve_path(paths.get("npc_filter"))    # optional key; None if absent
+
+    # data layout: an RPU-shaped data/ tree, packed verbatim. Source MSGs are
+    # read from data/text/<lang>/**/*.msg; generated speech (acm/lip/txt) is
+    # written into data/sound/speech/<folder>/. wav/ and textgrid/ stay flat.
+    data_root   = resolve_path(paths.get("data_root", "./data"))
+    speech_root = os.path.join(data_root, "sound", "speech")
+    # flat layout: category folders. Unused when layout == "data".
+    msgdir      = resolve_path(paths["msg"])
+    txtdir      = resolve_path(paths["txt"])
+    acmdir      = resolve_path(paths["acm"])
+    lipdir      = resolve_path(paths["lip"])
+    intdir      = resolve_path(paths.get("scripts", "./scripts"))
+    artdir      = resolve_path(paths.get("art", "./art"))
+
     settings    = config["settings"]
     mfa_env     = settings["mfa_env"]
     lufs        = settings["lufs"]
     no_norm     = settings["no_norm"]
 
     npc_prefixes = load_npc_prefixes(npc_filter_file)
-    float_filter_file = resolve_path(paths.get("float_filter"))
-    float_map         = load_float_ranges(float_filter_file)
+    float_filter_file  = resolve_path(paths.get("float_filter"))
+    float_map          = load_ranges(float_filter_file)
+    combat_filter_file = resolve_path(paths.get("combat_filter"))
+    combat_map         = load_ranges(combat_filter_file)
     mfa_lock_file = resolve_path(paths.get("mfa_lock"))
     mfa_lock      = load_mfa_lock(mfa_lock_file)
+
+    # ── Source-tree layout helpers ───────────────────────────────────────────
+    def _source_msg_paths() -> list:
+        """Source-language MSG file paths (the ones parsed for audio tags)."""
+        if layout == "data":
+            base = os.path.join(data_root, "text", text_dir_lang(args.language))
+            if not os.path.isdir(base):
+                sys.exit(f"MSG source not found: '{base}'\n"
+                         f"layout=data expects data/text/{text_dir_lang(args.language)}/**/*.msg")
+            found = sorted(
+                os.path.join(r, f)
+                for r, _d, files in os.walk(base)
+                for f in files if f.lower().endswith(".msg"))
+            if not found:
+                sys.exit(f"No .msg files under '{base}/'")
+            return found
+        return _scan_msg_dir(msgdir)
+
+    def _speech_dir(stem: str) -> str:
+        """data-layout sound/speech/<folder> for a stem (uses stem_src, below)."""
+        return os.path.join(speech_root,
+                            speech_folder(stem, stem_src.get(stem.lower()), acm_only_msgs))
+
+    def txt_path_for(stem: str) -> str:
+        return (os.path.join(_speech_dir(stem), stem + ".txt") if layout == "data"
+                else os.path.join(txtdir, stem + ".txt"))
+
+    def acm_path_for(stem: str) -> str:
+        return (os.path.join(_speech_dir(stem), stem + ".acm") if layout == "data"
+                else os.path.join(acmdir, stem + ".acm"))
+
+    def lip_path_for(stem: str) -> str:
+        return (os.path.join(_speech_dir(stem), stem + ".lip") if layout == "data"
+                else os.path.join(lipdir, stem + ".lip"))
+
+    def _iter_existing(ext: str):
+        """Yield (stem, path) for every generated .<ext> already on disk, across
+        both layouts — used when a step is skipped and later steps still need
+        the files it would have produced."""
+        if layout == "data":
+            if os.path.isdir(speech_root):
+                for r, _d, files in os.walk(speech_root):
+                    for f in files:
+                        if f.lower().endswith(ext):
+                            yield os.path.splitext(f)[0], os.path.join(r, f)
+        else:
+            d = {"txt": txtdir, "acm": acmdir, "lip": lipdir}[ext.lstrip(".")]
+            if os.path.isdir(d):
+                for f in sorted(os.listdir(d)):
+                    if f.lower().endswith(ext):
+                        yield os.path.splitext(f)[0], os.path.join(d, f)
+
+    def is_acm_only(stem: str) -> bool:
+        """ACM-only = no MFA, no LIP: holodisk narration (acm_only msgs),
+        ambient floats, and per-NPC combat barks."""
+        src  = stem_src.get(stem.lower())
+        base = os.path.splitext(os.path.basename(src))[0].lower() if src else ""
+        return (base in acm_only_msgs
+                or in_ranges(stem, float_map)
+                or in_ranges(stem, combat_map))
+
+    def _data_overlay_entries(stems: set[str]) -> list:
+        """data layout: [(dat_path, local_path), …] for the speech files (acm +
+        any lip/txt) whose stem is in *stems* — for an opt-out overlay DAT."""
+        out, want = [], {s.lower() for s in stems}
+        if want and os.path.isdir(speech_root):
+            for r, _d, files in os.walk(speech_root):
+                for f in sorted(files):
+                    if os.path.splitext(f)[0].lower() in want:
+                        p = os.path.join(r, f)
+                        out.append((os.path.relpath(p, data_root).replace(os.sep, "\\"), p))
+        return out
 
     # ── Language & Dictionary Resolution ──────────────────────────────────────
     mfa_name        = LANGUAGE_CONFIG[args.language]
@@ -1061,10 +1209,34 @@ def main():
     custom_dict_print = custom_dict_path if custom_dict_path and os.path.isfile(custom_dict_path) else "None"
     main_dict_print   = main_dict_path if main_dict_path else f"{mfa_name} (MFA built-in/downloaded)"
 
+    # ── Scan the source MSGs once, up front (always — so the mfa/lip/dat steps
+    #    see this even when the msg step is skipped). Records, per audio stem,
+    #    which MSG file it came from (stem_src, for speech-folder routing) and
+    #    which stems are ACM-only floats / combat barks. ────────────────────────
+    stem_src:     dict[str, str] = {}   # stem → source .msg path
+    float_stems:  set[str] = set()
+    combat_stems: set[str] = set()
+    try:
+        _scan_paths = _source_msg_paths()
+    except SystemExit:
+        _scan_paths = []
+    for _mp in _scan_paths:
+        try:
+            for _ln, _tag, _text in parse_msg(_mp, encoding=lang_enc(args.language)):
+                t = _tag.lower()
+                stem_src.setdefault(t, _mp)
+                if in_ranges(_tag, float_map):
+                    float_stems.add(t)
+                if in_ranges(_tag, combat_map):
+                    combat_stems.add(t)
+        except Exception:
+            pass
+
     if _verbosity >= 1:
         print_section("Configuration")
         for label, value in (
             ("Language",       args.language),
+            ("Layout",         layout + (f"  ({data_root})" if layout == "data" else "")),
             ("Acoustic Model", mfa_name),
             ("Dictionary",     main_dict_print),
             ("Custom Dict",    custom_dict_print),
@@ -1072,13 +1244,17 @@ def main():
             ("NPC filter",     summarise(sorted(npc_prefixes)) if npc_prefixes else "all"),
         ):
             print(f"  {label:<15}: {value}")
-        # Floats / MFA lock: show the count, then a truncated sample (full list
-        # under -v) so a big float_filter.cfg / mfa_lock.cfg doesn't flood the
-        # banner. The authoritative lists live in those files.
+        # Floats / combat / MFA lock: show the count, then a truncated sample
+        # (full list under -v) so a big filter file doesn't flood the banner.
+        # The authoritative lists live in those files.
         if float_map:
-            print(f"  {'Floats':<15}: {len(float_map)} "
-                  f"{_plural(len(float_map), 'prefix', 'prefixes')} — "
-                  f"{summarise(sorted(float_map))}")
+            print(f"  {'Floats':<15}: {len(float_stems)} stem(s) — "
+                  f"{summarise(sorted(float_stems))}")
+        if combat_map:
+            print(f"  {'Combat barks':<15}: {len(combat_stems)} stem(s) — "
+                  f"{summarise(sorted(combat_stems))}")
+        if acm_only_msgs:
+            print(f"  {'ACM-only msgs':<15}: {summarise(sorted(acm_only_msgs))}")
         if mfa_lock:
             print(f"  {'MFA lock':<15}: {len(mfa_lock)} "
                   f"{_plural(len(mfa_lock), 'tag')} — {summarise(sorted(mfa_lock))}")
@@ -1100,22 +1276,6 @@ def main():
     # Fast-fail dependency check
     check_dependencies(run, snd2acm_cfg, mfa_env)
 
-    # ── Derive float_stems from MSG files (always, so mfa/lip steps see it even
-    #    when the msg step is skipped) ─────────────────────────────────────────
-    float_stems: set[str] = set()
-    if float_map and os.path.isdir(msgdir):
-        for _mp in sorted(
-            os.path.join(msgdir, f)
-            for f in os.listdir(msgdir)
-            if f.lower().endswith(".msg")
-        ):
-            try:
-                for ln, tag, _text in parse_msg(_mp, encoding=lang_enc(args.language)):
-                    if is_float_line(tag, float_map):
-                        float_stems.add(tag.lower())
-            except Exception:
-                pass
-
     # ── Pipeline state ────────────────────────────────────────────────────────
     msg_paths  = []
     txt_map    = {}      # stem → text (from msg step or loaded from txt/)
@@ -1130,7 +1290,7 @@ def main():
     if "msg" in run:
         print_section("Parse MSG → TXT", _step_no("msg"), n_steps)
 
-        msg_paths = _scan_msg_dir(msgdir)
+        msg_paths = _source_msg_paths()
 
         all_entries = []
         for msg_path in msg_paths:
@@ -1164,11 +1324,13 @@ def main():
                        f"reused on MSG lines {lines} with differing text — "
                        f"keeping line {occ[0][0]}")
 
-        os.makedirs(txtdir, exist_ok=True)
+        if layout != "data":
+            os.makedirs(txtdir, exist_ok=True)
         written = kept = 0
         for tag, occ in sorted(by_tag.items()):
             text = occ[0][1]                       # first occurrence wins
-            out  = os.path.join(txtdir, f"{tag}.txt")
+            out  = txt_path_for(tag)
+            os.makedirs(os.path.dirname(out), exist_ok=True)
             if os.path.isfile(out):
                 existing = open(out, encoding=lang_enc(args.language)).read().strip()
                 if existing == text:
@@ -1192,15 +1354,13 @@ def main():
     else:
         print_section("Parse MSG → TXT", skipped=True)
         # Resolve msg_paths for the DAT step (best-effort; missing dir is not fatal here)
-        if os.path.isdir(msgdir):
-            msg_paths = _scan_msg_dir(msgdir)
+        try:
+            msg_paths = _source_msg_paths()
+        except SystemExit:
+            msg_paths = []
         # Load txt_map from existing TXT files (respecting manual edits)
-        if os.path.isdir(txtdir):
-            for f in sorted(os.listdir(txtdir)):
-                if f.endswith(".txt"):
-                    stem = os.path.splitext(f)[0]
-                    txt_map[stem] = open(
-                        os.path.join(txtdir, f), encoding=lang_enc(args.language)).read().strip()
+        for stem, p in _iter_existing(".txt"):
+            txt_map[stem] = open(p, encoding=lang_enc(args.language)).read().strip()
 
     # ── STEP 2: audio/ → wav/ (Universal Audio step) ─────────────────────────
     if "wav" in run:
@@ -1243,7 +1403,7 @@ def main():
         for stem in filter_by_prefix(sorted(audio_map), npc_prefixes, key=lambda x: x):
             src_path = audio_map[stem]
             # Validate: must have a matching TXT
-            txt_path = os.path.join(txtdir, stem + ".txt")
+            txt_path = txt_path_for(stem)
             if not os.path.isfile(txt_path):
                 status("SKIP", stem,
                        "no matching .txt (run 'msg' first, or tag not in MSG)",
@@ -1284,7 +1444,7 @@ def main():
             for f in sorted(os.listdir(wavdir)):
                 if f.lower().endswith(".wav"):
                     stem     = os.path.splitext(f)[0]
-                    txt_path = os.path.join(txtdir, stem + ".txt")
+                    txt_path = txt_path_for(stem)
                     if os.path.isfile(txt_path) and \
                             filter_by_prefix([(stem,)], npc_prefixes, key=lambda x: x[0]):
                         wav_pairs.append((stem, os.path.join(wavdir, f), txt_path))
@@ -1301,9 +1461,11 @@ def main():
                 status("INFO", "", "place snd2acm.exe next to vock.py and re-run",
                        record=False)
             else:
-                os.makedirs(acmdir, exist_ok=True)
+                if layout != "data":
+                    os.makedirs(acmdir, exist_ok=True)
                 for stem, wav_path, _txt in wav_pairs:
-                    acm_path = os.path.join(acmdir, stem + ".acm")
+                    acm_path = acm_path_for(stem)
+                    os.makedirs(os.path.dirname(acm_path), exist_ok=True)
                     try:
                         wav_to_acm(snd2acm_bin, wav_path, acm_path)
                         size_kb = os.path.getsize(acm_path) / 1024
@@ -1316,10 +1478,15 @@ def main():
         print_section("WAV → ACM", skipped=True)
 
     # ── STEP 4: MFA alignment ─────────────────────────────────────────────────
-    # Every line gets MFA alignment and a LIP file — floats included, so
-    # vock_floats.dat carries a LIP as a safety net in case a line was
-    # mis-classified as a float.
+    # In flat layout every line gets MFA + a LIP (floats included, as a safety
+    # net for a mis-classified line). In data layout the ACM-only categories —
+    # holodisk narration, ambient floats, per-NPC combat barks — are skipped
+    # here and in the LIP step: they have no talking head, and forced alignment
+    # of a long holodisk read against fragmented text only produces noise.
     head_wav_pairs = wav_pairs
+    _acm_only_skip = (
+        {p[0] for p in wav_pairs if is_acm_only(p[0])} if layout == "data" else set()
+    )
 
     if "mfa" in run:
         print_section("MFA forced alignment → TextGrid", _step_no("mfa"), n_steps)
@@ -1352,7 +1519,10 @@ def main():
             alignable_pairs = []
             for item in head_wav_pairs:
                 stem = item[0].lower()
-                if stem in mfa_lock:
+                if item[0] in _acm_only_skip:
+                    status("SKIP", item[0], "ACM-only (holodisk/float/combat) — no MFA",
+                           bulk=True)
+                elif stem in mfa_lock:
                     tg_path = os.path.join(textgriddir, item[0] + ".TextGrid")
                     if os.path.isfile(tg_path):
                         status("SKIP", item[0], "locked — existing TextGrid kept", bulk=True)
@@ -1418,9 +1588,15 @@ def main():
         if not head_wav_pairs:
             status("SKIP", "", "no WAV files for duration — run 'wav' first")
         else:
-            os.makedirs(lipdir, exist_ok=True)
+            if layout != "data":
+                os.makedirs(lipdir, exist_ok=True)
             for stem, wav_path, _txt_path in head_wav_pairs:
-                lip_path = os.path.join(lipdir, stem + ".lip")
+                if stem in _acm_only_skip:
+                    status("SKIP", stem, "ACM-only (holodisk/float/combat) — no LIP",
+                           bulk=True)
+                    continue
+                lip_path = lip_path_for(stem)
+                os.makedirs(os.path.dirname(lip_path), exist_ok=True)
                 tg_path  = os.path.join(textgriddir, stem + ".TextGrid")
 
                 try:
@@ -1453,10 +1629,30 @@ def main():
         include_acm = ("acm" not in (args.skip or []))
         os.makedirs(os.path.dirname(datfile) or ".", exist_ok=True)
 
-        # ── 6a: Talking-head DAT ──────────────────────────────────────────────
-        print_section("Build vock.dat  (talking heads)", _step_no("dat"), n_steps)
-        try:
-            dat_entries = collect_dat_entries(
+        # float + combat speech is carried by the opt-out overlay DATs, so keep
+        # it out of the main DAT. Holodisk narration stays in the main DAT
+        # (inert without the engine feature, like stock combatai.msg audio).
+        overlay_split = float_stems | combat_stems
+
+        def _build_dat(target, entries):
+            os.makedirs(os.path.dirname(target) or ".", exist_ok=True)
+            if not entries:
+                status("SKIP", os.path.basename(target), "no files to pack")
+                return
+            try:
+                write_dat2(target, entries)
+                kb = os.path.getsize(target) / 1024
+                status("OK", os.path.basename(target),
+                       f"{len(entries)} file(s), {kb:.1f} KB  →  {target}")
+            except Exception as e:
+                status("FAIL", os.path.basename(target), f"DAT creation failed: {e}")
+
+        # ── 6a: main DAT ─────────────────────────────────────────────────────
+        print_section("Build vock.dat", _step_no("dat"), n_steps)
+        if layout == "data":
+            main_entries = collect_data_tree_entries(data_root, exclude_stems=overlay_split)
+        else:
+            main_entries = collect_dat_entries(
                 msg_paths    = msg_paths,
                 acm_dir      = acmdir,
                 lip_dir      = lipdir,
@@ -1467,44 +1663,32 @@ def main():
                 int_dir      = intdir,
                 art_dir      = artdir,
             )
-            if not dat_entries:
-                status("SKIP", os.path.basename(datfile), "no files to pack")
-            else:
-                write_dat2(datfile, dat_entries)
-                total_kb = os.path.getsize(datfile) / 1024
-                status("OK", os.path.basename(datfile),
-                       f"{len(dat_entries)} file(s), {total_kb:.1f} KB  →  {datfile}")
-        except Exception as e:
-            status("FAIL", os.path.basename(datfile), f"DAT creation failed: {e}")
+        _build_dat(datfile, main_entries)
 
-        # ── 6b: Float DAT (only when float lines exist) ───────────────────────
-        if float_stems:
-            print_section("Build vock_floats.dat  (floats)")
-            os.makedirs(os.path.dirname(float_datfile) or ".", exist_ok=True)
-            try:
-                float_entries = collect_dat_entries(
+        # ── 6b: opt-out overlay DATs (floats, combat barks) ──────────────────
+        for name, stems, target in (
+            ("floats",       float_stems,  float_datfile),
+            ("combat barks", combat_stems, combat_datfile),
+        ):
+            if not stems:
+                continue
+            print_section(f"Build {os.path.basename(target)}  ({name})")
+            if layout == "data":
+                entries = _data_overlay_entries(stems)
+            else:
+                entries = collect_dat_entries(
                     msg_paths     = [],
                     acm_dir       = acmdir,
                     lip_dir       = lipdir,
                     txt_dir       = txtdir,
                     include_acm   = include_acm,
-                    only_stems    = float_stems,
+                    only_stems    = stems,
                     include_msg   = False,
                     discover_from = "acm",
-                    int_dir       = None,      # INT scripts go in vock.dat only
-                    art_dir       = None,      # art assets go in vock.dat only
+                    int_dir       = None,
+                    art_dir       = None,
                 )
-                if not float_entries:
-                    status("SKIP", os.path.basename(float_datfile),
-                           "no float ACM files — run 'acm' first")
-                else:
-                    write_dat2(float_datfile, float_entries)
-                    total_kb = os.path.getsize(float_datfile) / 1024
-                    status("OK", os.path.basename(float_datfile),
-                           f"{len(float_entries)} file(s), {total_kb:.1f} KB  →  {float_datfile}")
-            except Exception as e:
-                status("FAIL", os.path.basename(float_datfile),
-                       f"DAT creation failed: {e}")
+            _build_dat(target, entries)
     else:
         print_section("Build DAT", skipped=True)
 
@@ -1525,9 +1709,10 @@ def main():
         if os.path.isfile(datfile):
             rows.append(("vock.dat",
                          f"{_fmt_size(os.path.getsize(datfile) / 1024)}   {datfile}"))
-        if float_stems and os.path.isfile(float_datfile):
-            rows.append(("vock_floats.dat",
-                         f"{_fmt_size(os.path.getsize(float_datfile) / 1024)}   {float_datfile}"))
+        for stems, target in ((float_stems, float_datfile), (combat_stems, combat_datfile)):
+            if stems and os.path.isfile(target):
+                rows.append((os.path.basename(target),
+                             f"{_fmt_size(os.path.getsize(target) / 1024)}   {target}"))
     else:
         rows.append(("DAT", "skipped"))
 
