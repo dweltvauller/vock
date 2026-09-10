@@ -1,6 +1,6 @@
 # V.O.C.K. Vocal Output Creation Kit
 
-A Python script that automates the complete voice modding pipeline for Fallout 2. Give it `.msg` dialogue file(s) and a folder of audio files — it produces a ready-to-install `vock.dat` containing ACM audio, LIP sync, and dialogue files.
+A Python script that automates the complete voice modding pipeline for the Fallout 2 engine — Fallout 2 itself, and games built on it such as Fallout 1 via [*Fallout Et Tu*](https://github.com/rotators/Fo1in2/). Give it `.msg` dialogue file(s) and a folder of audio files — it produces a ready-to-install `vock.dat` containing ACM audio, LIP sync, and dialogue files.
 
 ## What it does
 
@@ -25,6 +25,7 @@ vock/
 ├── vock.cfg              ← Global settings and paths
 ├── npc_filter.cfg         ← Optional: NPC prefixes to include (omit to process all)
 ├── float_filter.cfg       ← Optional: float/ambient line definitions (ACM-only, no LIP)
+├── combat_filter.cfg      ← Optional: per-NPC combat-bark line definitions (ACM-only, no LIP)
 ├── mfa_lock.cfg           ← Optional: audio tags whose TextGrid MFA must never regenerate
 ├── dictionaries/         ← custom.<language>.dict files
 ├── phonemes/             ← Phoneme mapping tables
@@ -40,8 +41,23 @@ vock/
 ├── unknown.txt           ← generated: words not recognized by dictionary
 └── dat/
     ├── vock.dat          ← generated: ready-to-install Fallout 2 DAT archive
-    └── vock_floats.dat   ← generated: float/ambient audio DAT (if floats defined)
+    ├── vock_floats.dat   ← generated: float/ambient audio DAT (if floats defined)
+    └── vock_combat.dat   ← generated: combat-bark audio DAT (if combat lines defined)
 ```
+
+### Source layout: `flat` vs `data`
+
+`layout` in `vock.cfg` `[general]` selects how the project's source is arranged:
+
+- **`flat`** (default) — the category folders above: `msg/`, `acm/`, `lip/`, `txt/`, `scripts/`, `art/`.
+- **`data`** — a sparse, [RPU](https://github.com/BGforgeNet/Fallout2_Restoration_Project)-shaped `data/` tree holding only the files the mod changes:
+  ```
+  data/text/<lang>/dialog/*.msg      source + localised MSGs (diff against rpu/data/)
+  data/sound/speech/<folder>/*.acm   generated speech (also .lip, .txt)
+  data/scripts/*.int                 compiled scripts
+  data/art/heads/*.frm
+  ```
+  Source MSGs are read from `data/text/<lang>/**/*.msg` (the `--language` value picks `<lang>`; `arpabet` → `english`), and the DAT is packed from `data/**` verbatim — the on-disk path *is* the in-DAT path, no synthesis. `wav/` and `textgrid/` stay top-level as rebuild metadata. `tools/msg_localize.py` writes localised MSGs straight into `data/text/<lang>/dialog/` and builds no DAT of its own.
 
 ## Supported Languages
 
@@ -220,22 +236,35 @@ ahs7    # AHS-7
 
 This applies to steps 1–5 (msg, wav, acm, mfa, lip). The `dat` step always compiles all files already on disk, so characters you processed in a previous run are still included in `vock.dat`.
 
-## Float lines
+## Float lines and combat barks
 
 Fallout 2 NPCs have two kinds of voiced lines: talking-head dialogue (which requires both ACM and LIP) and ambient floats (which play as overhead text with ACM audio only — no LIP file needed). `float_filter.cfg` defines which lines are floats so the pipeline can handle them correctly.
+
+`combat_filter.cfg` is identical in format and behaviour, for per-NPC combat barks — lines that extend an NPC's numbered tag sequence and live in that NPC's own speech folder, exactly like floats.
 
 **Format** — one NPC per line, with a comma-separated list of audio tag numbers or ranges:
 
 ```
-# float_filter.cfg
+# float_filter.cfg  (and combat_filter.cfg — same syntax)
 mor   21, 22            # tags mor21, mor22
 zaius 37                # tag zaius37
 kaga  6-49              # tags kaga6 through kaga49
 ```
 
-Float lines are detected during the `msg` step. During `mfa` and `lip` they are silently excluded — no TextGrid or LIP is generated for them. During `dat`, float ACM files are packed into a **separate** `vock_floats.dat` archive, while talking-head files go into the normal `vock.dat`.
+Filtered lines are detected during the `msg` step. During `mfa` and `lip` they are excluded — no TextGrid or LIP. During `dat`, float ACM files are packed into a **separate** `vock_floats.dat` and combat ACM files into `vock_combat.dat`; both are kept out of the main `vock.dat` so a player can opt out of either. Talking-head files go into `vock.dat`.
 
-Both DAT files need to be installed: `vock.dat` for dialogue, `vock_floats.dat` for floats.
+Install whichever DATs you want: `vock.dat` for dialogue, `vock_floats.dat` for floats, `vock_combat.dat` for combat barks.
+
+## ACM-only MSGs (holodisk narration)
+
+Some MSG files carry one continuous recording per entry rather than per-NPC dialogue — the FISSION holodisk-narration path reads audio slugs from `pipboy.msg` this way. List such files under `[acm_only]` in `vock.cfg`:
+
+```ini
+[acm_only]
+msgs = pipboy
+```
+
+Their tagged lines skip MFA and LIP (forced alignment does not apply to a long narration against fragmented page text), the generated audio goes to `sound/speech/<msg-basename>/` (e.g. `sound/speech/pipboy/`), and it stays in the main `vock.dat` — inert until the engine feature is present, like stock `combatai.msg` audio fields.
 
 ## MFA alignment lock
 
