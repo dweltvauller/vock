@@ -13,7 +13,7 @@ PIPELINE
   wav ────────[snd2acm / wine]──────────────► acm
   wav + txt ──[MFA]─────────────────────────► textgrid
   textgrid ─────────────────────────────────► lip
-  msg + acm + lip + txt + int + art ────────► dat/vock.dat
+  msg + acm + lip + txt + int + art ────────► dat/<mod>.dat
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 FOLDER STRUCTURE (all created automatically)
@@ -29,7 +29,8 @@ FOLDER STRUCTURE (all created automatically)
   ./scripts/      ← put pre-compiled Fallout 2 .INT script files here (packed into dat as scripts\*)
   ./art/          ← put art assets here, e.g. art/heads/*.FRM (packed into dat as art\*)
   ./unknown.txt   ← generated: words not recognized by the dictionary
-  ./dat/vock.dat  ← generated: ready-to-install Fallout 2 DAT archive
+  ./dat/<mod>.dat ← generated: ready-to-install Fallout 2 DAT archive
+                    (<mod> = project folder name; + -floats/-combat/-pipboy overlays)
 
   The above is the "flat" layout. With `layout = data` in vock.cfg the project
   is instead an RPU-shaped, sparse data/ tree: source MSGs are read from
@@ -37,8 +38,9 @@ FOLDER STRUCTURE (all created automatically)
   data/sound/speech/<folder>/, and the DAT is packed from data/** verbatim.
   wav/ and textgrid/ stay top-level as rebuild metadata. Floats
   (float_filter.cfg) and per-NPC combat barks (combat_filter.cfg) are ACM-only
-  and go to vock_floats.dat / vock_combat.dat; MSGs listed in [acm_only] (e.g.
-  pipboy → holodisk narration) are ACM-only too and stay in the main DAT.
+  and go to <mod>-floats.dat / <mod>-combat.dat; MSGs listed in [acm_only]
+  (e.g. pipboy → holodisk narration) are ACM-only too and go to <mod>-pipboy.dat.
+  All three overlays are excluded from the main DAT so a player can opt out.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 STEPS  (run with --steps or skip with --skip)
@@ -49,7 +51,7 @@ STEPS  (run with --steps or skip with --skip)
   acm   wav/ → ACM via snd2acm.exe
   mfa   MFA forced alignment → textgrid/   (ACM-only stems skipped)
   lip   textgrid/ → lip/                   (ACM-only stems skipped)
-  dat   Pack the source tree + acm/lip/txt → dat/vock.dat (+ float/combat DATs)
+  dat   Pack the source tree + acm/lip/txt → dat/<mod>.dat (+ overlay DATs)
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 USAGE
@@ -122,6 +124,7 @@ config = {
     "language":     _parser.get("general", "language"),
     "project_root": _parser.get("general", "project_root", fallback="./"),
     "layout":       _parser.get("general", "layout", fallback="flat").strip().lower(),
+    "mod_name":     _parser.get("general", "mod_name", fallback="").strip(),
     "paths":    dict(_parser["paths"]),
     "acm_only_msgs": {
         tok.lower()
@@ -1090,18 +1093,31 @@ def main():
     layout = config.get("layout", "flat")
     acm_only_msgs = config.get("acm_only_msgs", set())
 
-    audiodir    = resolve_path(paths["audio"])
-    wavdir      = resolve_path(paths["wav"])
-    textgriddir = resolve_path(paths["textgrid"])
-    datfile          = resolve_path(paths["dat"])
-    float_datfile    = resolve_path(paths.get("float_dat", "./dat/vock_floats.dat"))
-    combat_datfile   = resolve_path(paths.get("combat_dat", "./dat/vock_combat.dat"))
+    # Mod name → DAT filenames. Defaults to the project_root folder name so
+    # sibling mods (vock-fo2, vock-fo1, vock-sonora) never collide on vock.dat.
+    mod_name = (config.get("mod_name")
+                or os.path.basename(os.path.normpath(config.get("project_root", "."))
+                                    ) or "vock")
+
+    # audio / wav / textgrid: the MFA rebuild chain. Under layout=data it lives
+    # in work/ (work/audio gitignored, work/wav + work/textgrid committed);
+    # flat layout keeps ./audio ./wav ./textgrid. A cfg key overrides either.
+    _wk = "./work/" if layout == "data" else "./"
+    audiodir    = resolve_path(paths.get("audio")    or _wk + "audio")
+    wavdir      = resolve_path(paths.get("wav")      or _wk + "wav")
+    textgriddir = resolve_path(paths.get("textgrid") or _wk + "textgrid")
+
+    dat_dir          = resolve_path(paths.get("dat_dir", "./dat"))
+    datfile          = os.path.join(dat_dir, f"{mod_name}.dat")
+    float_datfile    = os.path.join(dat_dir, f"{mod_name}-floats.dat")
+    combat_datfile   = os.path.join(dat_dir, f"{mod_name}-combat.dat")
+    pipboy_datfile   = os.path.join(dat_dir, f"{mod_name}-pipboy.dat")
     snd2acm_cfg      = resolve_path(paths["snd2acm"])
     npc_filter_file  = resolve_path(paths.get("npc_filter"))    # optional key; None if absent
 
     # data layout: an RPU-shaped data/ tree, packed verbatim. Source MSGs are
     # read from data/text/<lang>/**/*.msg; generated speech (acm/lip/txt) is
-    # written into data/sound/speech/<folder>/. wav/ and textgrid/ stay flat.
+    # written into data/sound/speech/<folder>/.
     data_root   = resolve_path(paths.get("data_root", "./data"))
     speech_root = os.path.join(data_root, "sound", "speech")
     # flat layout: category folders. Unused when layout == "data".
@@ -1213,14 +1229,16 @@ def main():
     #    see this even when the msg step is skipped). Records, per audio stem,
     #    which MSG file it came from (stem_src, for speech-folder routing) and
     #    which stems are ACM-only floats / combat barks. ────────────────────────
-    stem_src:     dict[str, str] = {}   # stem → source .msg path
-    float_stems:  set[str] = set()
-    combat_stems: set[str] = set()
+    stem_src:      dict[str, str] = {}   # stem → source .msg path
+    float_stems:   set[str] = set()
+    combat_stems:  set[str] = set()
+    acm_only_stems: set[str] = set()     # from [acm_only] msgs, e.g. pipboy
     try:
         _scan_paths = _source_msg_paths()
     except SystemExit:
         _scan_paths = []
     for _mp in _scan_paths:
+        _base = os.path.splitext(os.path.basename(_mp))[0].lower()
         try:
             for _ln, _tag, _text in parse_msg(_mp, encoding=lang_enc(args.language)):
                 t = _tag.lower()
@@ -1229,6 +1247,8 @@ def main():
                     float_stems.add(t)
                 if in_ranges(_tag, combat_map):
                     combat_stems.add(t)
+                if _base in acm_only_msgs:
+                    acm_only_stems.add(t)
         except Exception:
             pass
 
@@ -1236,6 +1256,7 @@ def main():
         print_section("Configuration")
         for label, value in (
             ("Language",       args.language),
+            ("Mod",            mod_name),
             ("Layout",         layout + (f"  ({data_root})" if layout == "data" else "")),
             ("Acoustic Model", mfa_name),
             ("Dictionary",     main_dict_print),
@@ -1629,10 +1650,9 @@ def main():
         include_acm = ("acm" not in (args.skip or []))
         os.makedirs(os.path.dirname(datfile) or ".", exist_ok=True)
 
-        # float + combat speech is carried by the opt-out overlay DATs, so keep
-        # it out of the main DAT. Holodisk narration stays in the main DAT
-        # (inert without the engine feature, like stock combatai.msg audio).
-        overlay_split = float_stems | combat_stems
+        # Float, combat and holodisk (ACM-only) speech is carried by opt-out
+        # overlay DATs, so keep it all out of the main DAT.
+        overlay_split = float_stems | combat_stems | acm_only_stems
 
         def _build_dat(target, entries):
             os.makedirs(os.path.dirname(target) or ".", exist_ok=True)
@@ -1648,7 +1668,7 @@ def main():
                 status("FAIL", os.path.basename(target), f"DAT creation failed: {e}")
 
         # ── 6a: main DAT ─────────────────────────────────────────────────────
-        print_section("Build vock.dat", _step_no("dat"), n_steps)
+        print_section(f"Build {os.path.basename(datfile)}", _step_no("dat"), n_steps)
         if layout == "data":
             main_entries = collect_data_tree_entries(data_root, exclude_stems=overlay_split)
         else:
@@ -1665,10 +1685,11 @@ def main():
             )
         _build_dat(datfile, main_entries)
 
-        # ── 6b: opt-out overlay DATs (floats, combat barks) ──────────────────
+        # ── 6b: opt-out overlay DATs (floats, combat barks, holodisk) ────────
         for name, stems, target in (
-            ("floats",       float_stems,  float_datfile),
-            ("combat barks", combat_stems, combat_datfile),
+            ("floats",       float_stems,    float_datfile),
+            ("combat barks", combat_stems,   combat_datfile),
+            ("holodisk",     acm_only_stems, pipboy_datfile),
         ):
             if not stems:
                 continue
@@ -1707,9 +1728,11 @@ def main():
         rows.append(("Unknown words", f"{n_unknown}  → unknown.txt"))
     if "dat" in run:
         if os.path.isfile(datfile):
-            rows.append(("vock.dat",
+            rows.append((os.path.basename(datfile),
                          f"{_fmt_size(os.path.getsize(datfile) / 1024)}   {datfile}"))
-        for stems, target in ((float_stems, float_datfile), (combat_stems, combat_datfile)):
+        for stems, target in ((float_stems,    float_datfile),
+                              (combat_stems,   combat_datfile),
+                              (acm_only_stems, pipboy_datfile)):
             if stems and os.path.isfile(target):
                 rows.append((os.path.basename(target),
                              f"{_fmt_size(os.path.getsize(target) / 1024)}   {target}"))

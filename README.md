@@ -11,9 +11,14 @@ A Python script that automates the complete voice modding pipeline for the Fallo
   wav ────────[snd2acm / wine]──────────────► acm
   wav + txt ──[MFA]─────────────────────────► textgrid
   textgrid ──────────────────────────────────► lip  (floats: ACM only, no LIP)
-  msg + acm + lip + txt + scripts + art ──────► dat/vock.dat
-                                               dat/vock_floats.dat  (if floats defined)
+  msg + acm + lip + txt + scripts + art ──────► dat/<mod>.dat
+                                               dat/<mod>-floats.dat   (if floats defined)
+                                               dat/<mod>-combat.dat   (if combat lines defined)
+                                               dat/<mod>-pipboy.dat   (if [acm_only] MSGs defined)
 ```
+
+`<mod>` is the project folder name (e.g. `vock-fo2`), so sibling mods never
+collide. Override with `mod_name` in `vock.cfg` `[general]`.
 
 ## Folder structure
 
@@ -40,9 +45,10 @@ vock/
 ├── lip/                  ← generated: Fallout 2 LIP files
 ├── unknown.txt           ← generated: words not recognized by dictionary
 └── dat/
-    ├── vock.dat          ← generated: ready-to-install Fallout 2 DAT archive
-    ├── vock_floats.dat   ← generated: float/ambient audio DAT (if floats defined)
-    └── vock_combat.dat   ← generated: combat-bark audio DAT (if combat lines defined)
+    ├── <mod>.dat         ← generated: ready-to-install Fallout 2 DAT archive
+    ├── <mod>-floats.dat  ← generated: float/ambient audio DAT (if floats defined)
+    ├── <mod>-combat.dat  ← generated: combat-bark audio DAT (if combat lines defined)
+    └── <mod>-pipboy.dat  ← generated: holodisk-narration DAT (if [acm_only] MSGs)
 ```
 
 ### Source layout: `flat` vs `data`
@@ -56,8 +62,10 @@ vock/
   data/sound/speech/<folder>/*.acm   generated speech (also .lip, .txt)
   data/scripts/*.int                 compiled scripts
   data/art/heads/*.frm
+  work/wav/  work/textgrid/          MFA rebuild metadata (committed)
+  work/audio/                        raw voice-actor takes (gitignored)
   ```
-  Source MSGs are read from `data/text/<lang>/**/*.msg` (the `--language` value picks `<lang>`; `arpabet` → `english`), and the DAT is packed from `data/**` verbatim — the on-disk path *is* the in-DAT path, no synthesis. `wav/` and `textgrid/` stay top-level as rebuild metadata. `tools/msg_localize.py` writes localised MSGs straight into `data/text/<lang>/dialog/` and builds no DAT of its own.
+  Source MSGs are read from `data/text/<lang>/**/*.msg` (the `--language` value picks `<lang>`; `arpabet` → `english`), and the DAT is packed from `data/**` verbatim — the on-disk path *is* the in-DAT path, no synthesis. The MFA rebuild chain moves under `work/` (flat layout keeps `audio/`, `wav/`, `textgrid/` at the root). `tools/msg_localize.py` writes localised MSGs straight into `data/text/<lang>/dialog/` and builds no DAT of its own.
 
 ## Supported Languages
 
@@ -86,8 +94,8 @@ Note: [ARPAbet](https://en.wikipedia.org/wiki/ARPABET) is a unique, English-spec
 | `acm` | `wav/*.wav`        | `acm/*.acm`    | Convert to Fallout 2 ACM via `snd2acm.exe`       |
 | `mfa` | `wav/` + `txt/`    | `textgrid/`    | MFA forced alignment → phoneme timing            |
 | `lip` | `textgrid/`        | `lip/*.lip`    | Generate Fallout 2 LIP files (floats skipped)    |
-| `dat` | `msg/`+`acm/`+`lip/`+`txt/`+`scripts/`+`art/` | `dat/vock.dat`        | Pack talking-head files into a Fallout 2 DAT2 archive |
-| `dat` | `acm/` (float stems only)           | `dat/vock_floats.dat` | Pack float audio into a separate DAT2 archive (only runs if floats are defined) |
+| `dat` | source tree + `acm/`+`lip/`+`txt/` | `dat/<mod>.dat`        | Pack talking-head files into a Fallout 2 DAT2 archive |
+| `dat` | ACM-only stems (float / combat / holodisk) | `dat/<mod>-floats.dat`, `-combat.dat`, `-pipboy.dat` | Pack each ACM-only group into its own opt-out DAT2 archive (only the ones that have lines) |
 
 ## Output DAT structure
 
@@ -251,9 +259,9 @@ zaius 37                # tag zaius37
 kaga  6-49              # tags kaga6 through kaga49
 ```
 
-Filtered lines are detected during the `msg` step. During `mfa` and `lip` they are excluded — no TextGrid or LIP. During `dat`, float ACM files are packed into a **separate** `vock_floats.dat` and combat ACM files into `vock_combat.dat`; both are kept out of the main `vock.dat` so a player can opt out of either. Talking-head files go into `vock.dat`.
+Filtered lines are detected during the `msg` step. During `mfa` and `lip` they are excluded — no TextGrid or LIP. During `dat`, float ACM files are packed into `<mod>-floats.dat` and combat ACM files into `<mod>-combat.dat`; both are kept out of the main `<mod>.dat` so a player can opt out of either. Talking-head files go into `<mod>.dat`.
 
-Install whichever DATs you want: `vock.dat` for dialogue, `vock_floats.dat` for floats, `vock_combat.dat` for combat barks.
+Install whichever DATs you want: `<mod>.dat` for dialogue, `<mod>-floats.dat` for floats, `<mod>-combat.dat` for combat barks.
 
 ## ACM-only MSGs (holodisk narration)
 
@@ -264,7 +272,7 @@ Some MSG files carry one continuous recording per entry rather than per-NPC dial
 msgs = pipboy
 ```
 
-Their tagged lines skip MFA and LIP (forced alignment does not apply to a long narration against fragmented page text), the generated audio goes to `sound/speech/<msg-basename>/` (e.g. `sound/speech/pipboy/`), and it stays in the main `vock.dat` — inert until the engine feature is present, like stock `combatai.msg` audio fields.
+Their tagged lines skip MFA and LIP (forced alignment does not apply to a long narration against fragmented page text), the generated audio goes to `sound/speech/<msg-basename>/` (e.g. `sound/speech/pipboy/`), and it is packed into its own opt-out `<mod>-pipboy.dat` — inert until the engine feature is present, like stock `combatai.msg` audio fields.
 
 ## MFA alignment lock
 
@@ -333,11 +341,11 @@ All global settings, file paths, and environment configurations are managed in `
 - `project_root`: Root folder that every path in `[paths]` is resolved against (default: `./`, this folder). Point it at another project's folder (e.g. `../vock-fo2/`) to run the pipeline against that project's `msg/`, `audio/`, `txt/`, etc. without moving or duplicating anything.
 - `[paths]`: Defines the location of your input/output folders and the path to your snd2acm.exe executable, all relative to `project_root`.
   - `npc_filter`: points to `npc_filter.cfg` — NPC prefixes to include (omit or leave empty to process all).
-  - `float_filter`: points to `float_filter.cfg` — float/ambient line definitions (ACM-only, no LIP).
+  - `float_filter` / `combat_filter`: point to `float_filter.cfg` / `combat_filter.cfg` — float and per-NPC combat-bark line definitions (ACM-only, no LIP).
   - `mfa_lock`: points to `mfa_lock.cfg` — audio tags whose existing TextGrid `mfa` must never regenerate.
-  - `float_dat`: output path for the float DAT archive (default: `./dat/vock_floats.dat`).
-  - `scripts`: folder of pre-compiled `.INT` script files to pack into the DAT as `scripts\*`.
-  - `art`: folder of art assets to pack into `vock.dat` as `art\*`. Sub-folders are preserved, so `art/heads/foo.FRM` → `art\heads\foo.frm`. Talking-head DAT only (not the float DAT).
+  - `dat_dir`: folder the DATs are written to (default: `./dat`). Filenames are `<mod>.dat` and `<mod>-{floats,combat,pipboy}.dat`, where `<mod>` is `mod_name` in `[general]` or, unset, the `project_root` folder name.
+  - `scripts`: folder of pre-compiled `.INT` script files to pack into the DAT as `scripts\*` (flat layout; data layout packs `data/scripts/`).
+  - `art`: folder of art assets to pack into the main DAT as `art\*`. Sub-folders are preserved, so `art/heads/foo.FRM` → `art\heads\foo.frm`.
   - `rpu_text`: path into the sibling RPU repo (default: `../rpu/data/text`) used by `tools/msg_localize.py`. Unlike the other `[paths]` entries, it resolves against `vock.cfg`'s own folder, not `project_root` — the RPU repo is shared infrastructure next to `vock/`, not part of whichever project `project_root` points at.
   - `loc`: output folder for localization tooling (see [Tools](#tools) below) — tagged foreign-language MSGs and rebuilt localized DATs.
 - `[settings]`:
@@ -359,7 +367,7 @@ All global settings, file paths, and environment configurations are managed in `
 Standalone utility scripts live in `tools/` — see [tools/tools.md](tools/tools.md) for full details.
 
 - **`dict_lookup.py`** — interactive MFA pronunciation dictionary lookup. Type a word, get its ARPA/IPA transcription(s), with fuzzy suggestions if it's not found.
-- **`msg_localize.py`** — tags foreign-language MSG files (from a sibling RPU repo) with the audio tags from your source-language MSGs, then rebuilds `vock.dat` with the localized MSGs added. Output goes to the `loc` folder configured in `vock.cfg`.
+- **`msg_localize.py`** — tags foreign-language MSG files (from a sibling RPU repo) with the audio tags from your source-language MSGs. In the `data` layout it writes them straight into `data/text/<lang>/dialog/` (packed by the `dat` step); in the `flat` layout it writes to the `loc` folder and rebuilds `<mod>.dat` with the localized MSGs added.
 
 ## File formats
 

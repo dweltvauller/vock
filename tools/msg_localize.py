@@ -49,11 +49,14 @@ _config = {
     "language":     _ini_parser.get("general", "language"),
     "project_root": _ini_parser.get("general", "project_root", fallback="./"),
     "layout":       _ini_parser.get("general", "layout", fallback="flat").strip().lower(),
+    "mod_name":     _ini_parser.get("general", "mod_name", fallback="").strip(),
     "paths":        dict(_ini_parser["paths"]),
 }
 SOURCE_LANG  = _config["language"]
 PATHS        = _config["paths"]
 DATA_LAYOUT  = _config["layout"] == "data"
+MOD_NAME     = (_config["mod_name"]
+                or os.path.basename(os.path.normpath(_config["project_root"])) or "vock")
 
 # Every paths entry is resolved against config["project_root"] (default "./"),
 # mirroring vock.py's resolve_path() -- so pointing project_root at another
@@ -84,8 +87,8 @@ else:
     SOURCE_MSG_DIR  = _PROJECT_ROOT / PATHS["msg"]
     _LOC_DIR        = _PROJECT_ROOT / PATHS["loc"]
     TAGGED_OUT_DIR  = _LOC_DIR / "tagged"
-    DAT_SRC_DIR     = (_PROJECT_ROOT / PATHS["dat"]).parent
-    DAT_FILES       = [Path(PATHS["dat"]).name]
+    DAT_SRC_DIR     = _PROJECT_ROOT / PATHS.get("dat_dir", "./dat")
+    DAT_FILES       = [f"{MOD_NAME}.dat"]
     DAT_OUT_DIR     = _LOC_DIR
 
 LANG_ENCODING = {
