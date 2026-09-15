@@ -97,7 +97,7 @@ def realign_isolated(stem: str, mfa_name: str, dict_arg: str) -> Path | None:
     """Align stem's wav alone, outside its NPC batch. Returns the path to the
     resulting TextGrid, or None if MFA failed."""
     wav_path = WAV_DIR / f"{stem}.wav"
-    txt_path = tc.TXT_DIR / f"{stem}.txt"
+    txt_path = tc.txt_path_for(stem)
     if not wav_path.is_file() or not txt_path.is_file():
         return None
 

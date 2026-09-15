@@ -96,7 +96,24 @@ _PROJECT_ROOT = (_VOCK_DIR / _config.get("project_root", "./")).resolve()
 # [paths] comment for why it's commented out by default.
 _wk = "./work/" if _config["layout"] == "data" else "./"
 TEXTGRID_DIR = _PROJECT_ROOT / (PATHS.get("textgrid") or _wk + "textgrid")
-TXT_DIR      = _PROJECT_ROOT / PATHS["txt"]
+TXT_DIR      = _PROJECT_ROOT / PATHS["txt"]     # flat layout only -- see txt_path_for()
+_DATA_ROOT   = _PROJECT_ROOT / PATHS.get("data_root", "./data")
+
+
+def _npc_folder(stem: str) -> str:
+    """Mirrors vock.py's _npc_folder(): mor1 -> mor."""
+    return re.sub(r"\d+$", "", stem).lower()
+
+
+def txt_path_for(stem: str) -> Path:
+    """Layout-aware .txt path for a stem. Under layout=data, generated speech
+    (acm/lip/txt) lives at data/sound/speech/<folder>/, not at a flat PATHS["txt"]
+    -- mirrors vock.py's speech_folder() for the NPC-prefix case (acm_only msgs,
+    e.g. pipboy holodisk narration, use the msg basename instead, but those
+    stems never get a TextGrid/MFA/LIP, so they never reach this tool)."""
+    if _config["layout"] == "data":
+        return _DATA_ROOT / "sound" / "speech" / _npc_folder(stem) / f"{stem}.txt"
+    return TXT_DIR / f"{stem}.txt"
 
 LANGUAGE_CONFIG = {
     "arpabet":    "english_us_arpa",
@@ -362,7 +379,7 @@ def score_file(stem: str, word_phones: dict[str, int], float_map: dict,
         penalty_pct *= FLOAT_PCT_PENALTY_WEIGHT
     coverage_penalty = max(penalty_abs, penalty_pct)
 
-    txt_path = TXT_DIR / f"{stem}.txt"
+    txt_path = txt_path_for(stem)
     expected, oov = (None, 0)
     completeness_penalty = 0.0
     note = ""
