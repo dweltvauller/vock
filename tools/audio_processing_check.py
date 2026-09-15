@@ -72,17 +72,26 @@ if not _ini_parser.read(_VOCK_DIR / "vock.cfg", encoding="utf-8"):
 
 _config = {
     "project_root": _ini_parser.get("general", "project_root", fallback="./"),
+    "layout":       _ini_parser.get("general", "layout", fallback="flat").strip().lower(),
     "paths":        dict(_ini_parser["paths"]),
 }
 PATHS = _config["paths"]
 _PROJECT_ROOT = (_VOCK_DIR / _config.get("project_root", "./")).resolve()
+
+# audio / wav default to ./audio ./wav (flat layout) or ./work/audio
+# ./work/wav (data layout), mirroring vock.py -- a cfg key overrides either.
+# See vock.cfg's [paths] comment for why they're commented out by default.
+_wk = "./work/" if _config["layout"] == "data" else "./"
 
 # 'wav' (post -16 LUFS normalization) is the default target: an absolute dB
 # threshold is only meaningful once every file has been brought to a
 # comparable loudness. Raw 'audio/' sources vary file to file with mic/gain,
 # so a quiet take can read as silent even when it's genuine speech -- pass
 # --source audio to look there instead, with that caveat in mind.
-SOURCE_DIRS = {"wav": PATHS["wav"], "audio": PATHS["audio"]}
+SOURCE_DIRS = {
+    "wav":   PATHS.get("wav")   or _wk + "wav",
+    "audio": PATHS.get("audio") or _wk + "audio",
+}
 
 SAMPLE_RATE = 22050          # matches vock.py's own 'wav' step target rate
 WINDOW_MS = 10

@@ -81,6 +81,7 @@ if not _ini_parser.read(_VOCK_DIR / "vock.cfg", encoding="utf-8"):
 _config = {
     "project_root": _ini_parser.get("general", "project_root", fallback="./"),
     "language":     _ini_parser.get("general", "language", fallback="arpabet"),
+    "layout":       _ini_parser.get("general", "layout", fallback="flat").strip().lower(),
     "paths":        dict(_ini_parser["paths"]),
 }
 PATHS = _config["paths"]
@@ -90,7 +91,11 @@ PATHS = _config["paths"]
 # project's folder retargets this tool too, instead of always reading vock/.
 _PROJECT_ROOT = (_VOCK_DIR / _config.get("project_root", "./")).resolve()
 
-TEXTGRID_DIR = _PROJECT_ROOT / PATHS["textgrid"]
+# textgrid defaults to ./textgrid (flat layout) or ./work/textgrid (data
+# layout), mirroring vock.py -- a cfg key overrides either. See vock.cfg's
+# [paths] comment for why it's commented out by default.
+_wk = "./work/" if _config["layout"] == "data" else "./"
+TEXTGRID_DIR = _PROJECT_ROOT / (PATHS.get("textgrid") or _wk + "textgrid")
 TXT_DIR      = _PROJECT_ROOT / PATHS["txt"]
 
 LANGUAGE_CONFIG = {
