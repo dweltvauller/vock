@@ -69,7 +69,7 @@ def _load_module(name: str, path: Path):
 vock = _load_module("vock_pipeline", _VOCK_DIR / "vock.py")
 tc   = _load_module("textgrid_confidence", _SCRIPT_DIR / "textgrid_confidence.py")
 
-WAV_DIR = tc._PROJECT_ROOT / tc.PATHS["wav"]
+WAV_DIR = tc._PROJECT_ROOT / (tc.PATHS.get("wav") or tc._wk + "wav")
 MFA_ENV = tc._ini_parser.get("settings", "mfa_env", fallback="aligner")
 MFA_LOCK_PATH = tc._PROJECT_ROOT / tc.PATHS.get("mfa_lock", "./mfa_lock.cfg")
 
