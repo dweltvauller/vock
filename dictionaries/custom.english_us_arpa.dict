@@ -1,3 +1,25 @@
+(breathe) HH
+(labored-breath) HH AA1 HH
+(rattling-breath) HH ER1 K
+(wheeze-in) HH ER1 HH
+(wheeze) HH IY1 Z
+(wheeze-out) HH AA1 S
+(wheeze-shaky) HH IY1 HH IY1 Z
+(dry-cough) K AH1 F
+(wet-cough) HH AE1 K
+(deep-cough) K AO1 HH
+(cough-fit) K AH1 K AH1 K AH1
+(short-gasp) HH AE1
+(gasp) HH AH0
+(grunt) HH AH1
+(sigh) HH AA1
+(snore) HH R AA0
+(spit) HH P T
+(lip-smack) P AH0
+(lip-lick) L AH0 L
+(throat-clear) HH EH1 M
+(mhmh) M HH M HH
+(mmhmhm) M HH M HH M HH M
 geck G EH1 K
 mynoc M IH1 N AH0 K
 tribals T R AY1 B AH0 L Z
@@ -7,7 +29,6 @@ geckos G EH1 K OW0 Z
 thingies TH IH1 NG G IY0 Z
 innit IH1 N IH0 T
 retard R IY1 T AA0 R D
-(spit) HH P T
 dogshit D AO1 G SH IH1 T
 zaius Z EY1 AH0 S
 radon R EY1 D AA0 N
@@ -44,7 +65,6 @@ tragu T R AA1 G UW0
 kramat K R AE1 M AH0 T
 uckner AH1 K N ER0
 zoogy Z UW1 G IY0
-(snore) HH R AA0
 morningstar M AO1 R N IH0 NG S T AA1 R
 whattya W AH1 T Y AH0
 don'tcha D OW1 N CH AH0
@@ -69,8 +89,6 @@ dontcha D OW1 N CH AH0
 fn EH1 F EH1 N
 supercharge S UW1 P ER0 CH AA2 R JH
 smoothskin S M UW1 DH S K IH1 N
-(grunt) HH AH1
-(breathe) HH
 mordinos M AO1 R D IY1 N AO0 Z
 rocketman R AA1 K AH0 T M AE1 N
 weasely W IY1 Z AH0 L IY0
@@ -87,10 +105,7 @@ ouchie AW1 CH IY0
 bloodline B L AH1 D L AY2 N
 connar K AA1 N ER0
 connar's K AA1 N ER0 Z
-(wheeze) HH IY1 Z
-(sigh) HH AA1
 dangly D AE1 NG G L IY0
-(mmhmhm) M HH M HH M HH M
 toasty T OW1 S T IY0
 smoothies S M UW1 DH IY0 Z
 smoothy S M UW1 DH IY0
@@ -123,14 +138,16 @@ stimpaks S T IH1 M P AE1 K Z
 honorless AA1 N ER0 L AH0 S
 serin S EH1 R IH0 N
 jerem JH EH1 R AH0 M
-(dry-cough) K AH1 F
-(deep-cough) K AO1 HH
-(wheeze-out) HH AA1 S
-(wheeze-in) HH ER1 HH
-(gasp) HH AH0
 meds M EH1 D Z
 pirla P ER1 L AH0
 puttana P UW0 T AA1 N AH0
 heeya HH IY1 Y AH0
 waddya W AA1 D Y AH0
 itan IH1 T AH0 N
+porca P AO1 R K AA0
+pistola P IY0 S T OW1 L AA0
+idiota IY0 D Y OW1 T AA0
+stronzo S T R OW1 N T S OW0
+rompiballe R OW0 M P IY0 B AA1 L EH0
+sleaze S L IY1 Z
+hendee HH EH1 N D IY0
