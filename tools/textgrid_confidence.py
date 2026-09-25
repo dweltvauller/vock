@@ -108,9 +108,9 @@ def _npc_folder(stem: str) -> str:
 def txt_path_for(stem: str) -> Path:
     """Layout-aware .txt path for a stem. Under layout=data, generated speech
     (acm/lip/txt) lives at data/sound/speech/<folder>/, not at a flat PATHS["txt"]
-    -- mirrors vock.py's speech_folder() for the NPC-prefix case (acm_only msgs,
-    e.g. pipboy holodisk narration, use the msg basename instead, but those
-    stems never get a TextGrid/MFA/LIP, so they never reach this tool)."""
+    -- mirrors vock.py's sound_folder() for the NPC-prefix case (acm_only msgs,
+    e.g. pipboy holodisk narration, go to sound/<msg basename>/ with no .txt,
+    but those stems never get a TextGrid/MFA/LIP, so they never reach this tool)."""
     if _config["layout"] == "data":
         return _DATA_ROOT / "sound" / "speech" / _npc_folder(stem) / f"{stem}.txt"
     return TXT_DIR / f"{stem}.txt"

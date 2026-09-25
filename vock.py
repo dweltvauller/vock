@@ -697,25 +697,28 @@ def _npc_folder(stem: str) -> str:
     """Derive the NPC folder from a stem like mor1 → mor."""
     return re.sub(r"\d+$", "", stem).lower()
 
-def speech_folder(stem: str, src_msg: str | None, acm_only_msgs: set[str]) -> str:
-    """sound/speech/<folder> for an audio stem.
+def sound_folder(stem: str, src_msg: str | None, acm_only_msgs: set[str]) -> tuple[str, ...]:
+    """Folder under sound/ for an audio stem, as path parts.
 
-    Lines from an ACM-only MSG (e.g. pipboy.msg → holodisk narration) use the
-    MSG basename as the folder; every other line uses the NPC prefix, so per-NPC
-    combat barks land in that NPC's own folder alongside their dialogue.
+    Lines from an ACM-only MSG (e.g. pipboy.msg → holodisk narration) go to
+    sound/<msg basename>/ (e.g. sound/pipboy/); every other line goes to
+    sound/speech/<NPC prefix>/, so per-NPC combat barks land in that NPC's own
+    folder alongside their dialogue.
     """
     if src_msg:
         base = os.path.splitext(os.path.basename(src_msg))[0].lower()
         if base in acm_only_msgs:
-            return base
-    return _npc_folder(stem)
+            return (base,)
+    return ("speech", _npc_folder(stem))
 
-def collect_data_tree_entries(data_root: str, exclude_stems: set[str] | None = None):
+def collect_data_tree_entries(data_root: str, exclude_stems: set[str] | None = None,
+                              exclude_dirs: tuple[str, ...] = ("sound\\speech\\",)):
     """Build [(dat_path, local_path), …] by walking an RPU-shaped data/ tree
     verbatim — the on-disk layout *is* the DAT layout.
 
     exclude_stems: speech stems (filename without extension) to leave out, so the
-    float / combat overlays can carry them instead of the main DAT.
+    float / combat / holodisk overlays can carry them instead of the main DAT.
+    exclude_dirs : lowercase DAT-path prefixes the stem exclusion applies under.
     """
     entries = []
     exclude = {s.lower() for s in (exclude_stems or ())}
@@ -725,7 +728,7 @@ def collect_data_tree_entries(data_root: str, exclude_stems: set[str] | None = N
         for f in sorted(files):
             local_path = os.path.join(root, f)
             rel = os.path.relpath(local_path, data_root).replace(os.sep, "\\")
-            if exclude and rel.lower().startswith("sound\\speech\\"):
+            if exclude and rel.lower().startswith(exclude_dirs):
                 if os.path.splitext(f)[0].lower() in exclude:
                     continue
             entries.append((rel, local_path))
@@ -734,7 +737,7 @@ def collect_data_tree_entries(data_root: str, exclude_stems: set[str] | None = N
 def collect_dat_entries(msg_paths, acm_dir, lip_dir, txt_dir,
                         include_acm=True, only_stems=None,
                         include_msg=True, discover_from="lip",
-                        int_dir=None, art_dir=None):
+                        int_dir=None, art_dir=None, sound_dirs=None):
     """
     Build [(dat_path, local_path), …] pairs with backslash separators.
 
@@ -745,6 +748,8 @@ def collect_dat_entries(msg_paths, acm_dir, lip_dir, txt_dir,
     int_dir      : folder of pre-compiled .INT scripts → packed as scripts\\*.
     art_dir      : folder of art assets (e.g. art_dir/heads/*.FRM) → packed as
                    art\\<subpath>, preserving the sub-folder layout under art_dir.
+    sound_dirs   : optional {stem: DAT folder} override for ACM-only MSG stems
+                   (e.g. "sound\\pipboy"); those get only their ACM, no LIP/TXT.
     """
     entries = []
 
@@ -774,6 +779,11 @@ def collect_dat_entries(msg_paths, acm_dir, lip_dir, txt_dir,
         stem_files = {s: p for s, p in stem_files.items() if s in normalised}
 
     for stem in sorted(stem_files):
+        if sound_dirs and stem in sound_dirs:
+            acm_path = os.path.join(acm_dir, stem + ".acm")
+            if include_acm and os.path.isfile(acm_path):
+                entries.append((f"{sound_dirs[stem]}\\{stem}.acm", acm_path))
+            continue
         folder = _npc_folder(stem)
         base   = f"sound\\speech\\{folder}"
         # LIP file — present for talking-head stems and floats (included as a safety net)
@@ -1117,9 +1127,12 @@ def main():
 
     # data layout: an RPU-shaped data/ tree, packed verbatim. Source MSGs are
     # read from data/text/<lang>/**/*.msg; generated speech (acm/lip/txt) is
-    # written into data/sound/speech/<folder>/.
+    # written into data/sound/speech/<folder>/, except ACM-only MSG audio
+    # (acm only, e.g. holodisks) which goes to data/sound/<msg basename>/.
     data_root   = resolve_path(paths.get("data_root", "./data"))
-    speech_root = os.path.join(data_root, "sound", "speech")
+    sound_root  = os.path.join(data_root, "sound")
+    speech_root = os.path.join(sound_root, "speech")
+    acm_only_roots = [os.path.join(sound_root, m) for m in sorted(acm_only_msgs)]
     # flat layout: category folders. Unused when layout == "data".
     msgdir      = resolve_path(paths["msg"])
     txtdir      = resolve_path(paths["txt"])
@@ -1159,9 +1172,13 @@ def main():
         return _scan_msg_dir(msgdir)
 
     def _speech_dir(stem: str) -> str:
-        """data-layout sound/speech/<folder> for a stem (uses stem_src, below)."""
-        return os.path.join(speech_root,
-                            speech_folder(stem, stem_src.get(stem.lower()), acm_only_msgs))
+        """data-layout sound/<folder> for a stem (uses stem_src, below)."""
+        return os.path.join(sound_root,
+                            *sound_folder(stem, stem_src.get(stem.lower()), acm_only_msgs))
+
+    def needs_txt(stem: str) -> bool:
+        """data layout: ACM-only MSG stems (holodisks) get no .txt on disk."""
+        return not (layout == "data" and stem.lower() in acm_only_stems)
 
     def txt_path_for(stem: str) -> str:
         return (os.path.join(_speech_dir(stem), stem + ".txt") if layout == "data"
@@ -1205,8 +1222,10 @@ def main():
         """data layout: [(dat_path, local_path), …] for the speech files (acm +
         any lip/txt) whose stem is in *stems* — for an opt-out overlay DAT."""
         out, want = [], {s.lower() for s in stems}
-        if want and os.path.isdir(speech_root):
-            for r, _d, files in os.walk(speech_root):
+        for top in [speech_root] + acm_only_roots:
+            if not (want and os.path.isdir(top)):
+                continue
+            for r, _d, files in os.walk(top):
                 for f in sorted(files):
                     if os.path.splitext(f)[0].lower() in want:
                         p = os.path.join(r, f)
@@ -1233,6 +1252,7 @@ def main():
     float_stems:   set[str] = set()
     combat_stems:  set[str] = set()
     acm_only_stems: set[str] = set()     # from [acm_only] msgs, e.g. pipboy
+    acm_only_dirs: dict[str, str] = {}   # acm-only stem → DAT folder, e.g. sound\pipboy
     try:
         _scan_paths = _source_msg_paths()
     except SystemExit:
@@ -1249,6 +1269,7 @@ def main():
                     combat_stems.add(t)
                 if _base in acm_only_msgs:
                     acm_only_stems.add(t)
+                    acm_only_dirs.setdefault(t, f"sound\\{_base}")
         except Exception:
             pass
 
@@ -1350,6 +1371,9 @@ def main():
         written = kept = 0
         for tag, occ in sorted(by_tag.items()):
             text = occ[0][1]                       # first occurrence wins
+            if not needs_txt(tag):
+                txt_map[tag] = text                # ACM-only: text kept in memory only
+                continue
             out  = txt_path_for(tag)
             os.makedirs(os.path.dirname(out), exist_ok=True)
             if os.path.isfile(out):
@@ -1423,9 +1447,10 @@ def main():
         skipped = 0
         for stem in filter_by_prefix(sorted(audio_map), npc_prefixes, key=lambda x: x):
             src_path = audio_map[stem]
-            # Validate: must have a matching TXT
-            txt_path = txt_path_for(stem)
-            if not os.path.isfile(txt_path):
+            # Validate: must have a matching TXT (ACM-only MSG stems need none —
+            # needs_txt() is only False for stems tagged in those MSGs)
+            txt_path = txt_path_for(stem) if needs_txt(stem) else None
+            if txt_path and not os.path.isfile(txt_path):
                 status("SKIP", stem,
                        "no matching .txt (run 'msg' first, or tag not in MSG)",
                        bulk=True)
@@ -1465,8 +1490,8 @@ def main():
             for f in sorted(os.listdir(wavdir)):
                 if f.lower().endswith(".wav"):
                     stem     = os.path.splitext(f)[0]
-                    txt_path = txt_path_for(stem)
-                    if os.path.isfile(txt_path) and \
+                    txt_path = txt_path_for(stem) if needs_txt(stem) else None
+                    if (txt_path is None or os.path.isfile(txt_path)) and \
                             filter_by_prefix([(stem,)], npc_prefixes, key=lambda x: x[0]):
                         wav_pairs.append((stem, os.path.join(wavdir, f), txt_path))
 
@@ -1670,7 +1695,10 @@ def main():
         # ── 6a: main DAT ─────────────────────────────────────────────────────
         print_section(f"Build {os.path.basename(datfile)}", _step_no("dat"), n_steps)
         if layout == "data":
-            main_entries = collect_data_tree_entries(data_root, exclude_stems=overlay_split)
+            main_entries = collect_data_tree_entries(
+                data_root, exclude_stems=overlay_split,
+                exclude_dirs=("sound\\speech\\",)
+                             + tuple(f"sound\\{m}\\" for m in sorted(acm_only_msgs)))
         else:
             main_entries = collect_dat_entries(
                 msg_paths    = msg_paths,
@@ -1708,6 +1736,7 @@ def main():
                     discover_from = "acm",
                     int_dir       = None,
                     art_dir       = None,
+                    sound_dirs    = acm_only_dirs,
                 )
             _build_dat(target, entries)
     else:

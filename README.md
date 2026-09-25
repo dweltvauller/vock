@@ -272,7 +272,7 @@ Some MSG files carry one continuous recording per entry rather than per-NPC dial
 msgs = pipboy
 ```
 
-Their tagged lines skip MFA and LIP (forced alignment does not apply to a long narration against fragmented page text), the generated audio goes to `sound/speech/<msg-basename>/` (e.g. `sound/speech/pipboy/`), and it is packed into its own opt-out `<mod>-pipboy.dat` — inert until the engine feature is present, like stock `combatai.msg` audio fields.
+Their tagged lines skip MFA and LIP (forced alignment does not apply to a long narration against fragmented page text), the generated audio goes to `sound/<msg-basename>/` (e.g. `sound/pipboy/`) as a bare `.acm` with no `.txt` or `.lip`, and it is packed into its own opt-out `<mod>-pipboy.dat` — inert until the engine feature is present, like stock `combatai.msg` audio fields.
 
 ## MFA alignment lock
 
