@@ -181,3 +181,32 @@ python3 tools/mfa_verify.py --apply arth2 lou12   # apply only these specific st
 | `--apply [STEM ...]` | off | Apply swaps: no names = every recommended stem, names = only those (even if not recommended, with a warning) |
 
 Verified end-to-end during development by deliberately reproducing the `arth2` corruption (temporarily unlocking it and re-running the batched `mfa` step) and confirming the tool detected it (batched 69 -> isolated 100), recommended a swap, and -- after `--apply` -- wrote a TextGrid byte-identical to the original hand-fixed version.
+---
+
+## float_scan.py
+
+Cross-checks `float_filter.cfg` against how each script actually uses its lines. A tag in `float_filter.cfg` gets no TextGrid and no LIP. If the same MSG line is also a dialogue reply (`Reply` / `NMessage` / `gSay_*`) under a talking head, the engine takes the lip-sync path, finds no `.lip`, and plays nothing. This tool finds those lines before release.
+
+**Dependencies:** None beyond `vock.py` (it imports `load_ranges` / `in_ranges` from it)
+
+**Configuration:** Read from `vock.cfg`, same as the tools above. Needs `layout = data`: it reads `data/text/<language>/dialog/*.msg` and matches each one to `scripts_src/**/<same name>.ssl`.
+
+**Usage:**
+```
+python3 tools/float_scan.py                # scan every tagged dialog MSG
+python3 tools/float_scan.py andr west      # only these tag prefixes
+python3 tools/float_scan.py --all          # also list dual-use TH lines
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `prefixes` | all | Only report audio tags starting with these prefixes |
+| `--all` | off | Also list dual-use lines outside `float_filter.cfg` (correct, shown for review) |
+| `--language LANG` | `english` | `data/text/<LANG>/dialog` folder to read |
+
+**Report groups:**
+- `ERROR`: float-range tag used as a dialogue reply. Silent in the talking-head window. Exit code 1 when any are found.
+- `INFO`: float-only tag missing from `float_filter.cfg`. Works, but is not in the opt-out floats DAT.
+- `OK` (`--all`): dual-use tag outside `float_filter.cfg`. Has a LIP, plays in both places.
+
+**Limits:** Only literal msg ids, the script's own `#define` constants and `random(a,b)` / `floater_rand(a,b)` ranges are resolved, and only against the script's own MSG. Lines from another script's MSG (`message_str(SCRIPT_X, n)`) and computed ids are not seen. It does not know whether a call site is live, so a reply inside dead code (e.g. `kctorr.ssl`'s `else if (0)` branch) still reports as an `ERROR`. Check each hit in the script before changing the filter.
