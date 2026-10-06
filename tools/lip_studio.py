@@ -28,9 +28,11 @@ import importlib.util
 import json
 import os
 import re
+import shutil
 import socketserver
 import struct
 import sys
+import tempfile
 import threading
 import urllib.parse
 import webbrowser
@@ -189,6 +191,7 @@ class Project:
         self.language = lang
         self.encoding = LANG_ENCODING.get(lang, "cp1252")
         self.mfa_name = LANGUAGE_CONFIG.get(lang, lang)
+        self.lock_file = root / paths.get("mfa_lock", "./mfa_lock.cfg")
 
     def speech_dir(self, folder: str) -> Path:
         return self.data_root / "sound" / "speech" / folder
@@ -254,6 +257,82 @@ class Project:
 
 def _natkey(s: str):
     return [int(t) if t.isdigit() else t for t in re.split(r"(\d+)", s)]
+
+
+# ─── mfa_lock.cfg ────────────────────────────────────────────────────────────
+# Same format vock.py's load_mfa_lock() reads: one stem per line, # comments.
+# A locked stem is left out of the 'mfa' step, so its TextGrid on disk survives
+# a pipeline re-run instead of being re-aligned over.
+
+def read_locks(lock_file: Path) -> set[str]:
+    if not lock_file.is_file():
+        return set()
+    out = set()
+    for raw in lock_file.read_text(encoding="utf-8").splitlines():
+        tok = raw.split("#", 1)[0].strip().lower()
+        if tok:
+            out.add(tok)
+    return out
+
+
+def set_lock(lock_file: Path, stem: str, on: bool, note: str = "") -> None:
+    lines = lock_file.read_text(encoding="utf-8").splitlines() if lock_file.is_file() else []
+    keep = [ln for ln in lines if ln.split("#", 1)[0].strip().lower() != stem]
+    if on:
+        keep.append(f"{stem}   # {note}" if note else stem)
+    lock_file.write_text("\n".join(keep) + "\n", encoding="utf-8")
+
+
+# ─── MFA re-alignment of one line ────────────────────────────────────────────
+
+_vock_mod = None
+_mfa_busy = threading.Lock()
+
+
+def vock_module():
+    """vock.py loaded as a module, for its dictionary merge and run_mfa()."""
+    global _vock_mod
+    if _vock_mod is None:
+        spec = importlib.util.spec_from_file_location("vock_pipeline", _VOCK_DIR / "vock.py")
+        _vock_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(_vock_mod)
+    return _vock_mod
+
+
+def realign(project: "Project", folder: str, stem: str) -> str:
+    """Align work/wav/<stem>.wav against the current .txt on its own, the way
+    mfa_verify.py does, and return the new TextGrid text. Nothing is written
+    into the project; the page decides whether to keep it."""
+    wav = project.find(folder, stem, "wav")
+    txt = project.find(folder, stem, "txt")
+    if not wav:
+        raise RuntimeError(f"no WAV for {stem} in {project.wav_dir} (run vock.py --steps wav)")
+    if not txt:
+        raise RuntimeError(f"no .txt for {stem}")
+    if shutil.which("conda") is None:
+        raise RuntimeError("conda not on PATH; MFA runs through 'conda run'")
+    vock = vock_module()
+    mfa_name = project.mfa_name
+    main_dict = vock.find_mfa_dict(mfa_name)
+    custom = vock.resolve_custom_dict(mfa_name, None)
+    env = _ini.get("settings", "mfa_env", fallback="aligner").split("#")[0].strip()
+    with tempfile.TemporaryDirectory(prefix=f"lip_studio_{stem}_") as tmp:
+        corpus, out = Path(tmp) / "corpus", Path(tmp) / "out"
+        corpus.mkdir()
+        out.mkdir()
+        dict_arg = mfa_name
+        if custom and main_dict:
+            dict_arg = str(Path(tmp) / "merged.dict")
+            vock.merge_dictionaries(main_dict, custom, dict_arg)
+        shutil.copy2(wav, corpus / f"{stem}.wav")
+        text = txt.read_text(encoding=project.encoding)
+        (corpus / f"{stem}.txt").write_text(text, encoding="utf-8")
+        if not vock.run_mfa(str(corpus), str(out), env, dict_arg, mfa_name):
+            raise RuntimeError("MFA failed (see the lip_studio.py console)")
+        tg = out / f"{stem}.TextGrid"
+        if not tg.is_file():
+            raise RuntimeError("MFA produced no TextGrid")
+        return tg.read_text(encoding="utf-8")
 
 
 # ─── Phoneme table (same mapping vock.py uses) ───────────────────────────────
@@ -359,6 +438,7 @@ class App:
             "phonemeMode": "arpa" if p.mfa_name.endswith("_arpa") else "ipa",
             "phonemeTable": load_phoneme_table(p.mfa_name),
             "sources": [s.name for s in self.fs.sources],
+            "lockFile": str(p.lock_file),
         }
 
 
@@ -411,6 +491,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self._json(app.project.speech_index())
             if url.path == "/api/heads":
                 return self._json(app.heads())
+            if url.path == "/api/locks":
+                return self._json(sorted(read_locks(app.project.lock_file)))
             if url.path == "/api/game":
                 rel = (q.get("path") or [""])[0]
                 if ".." in rel.replace("\\", "/").split("/"):
@@ -433,6 +515,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
         url = urllib.parse.urlparse(self.path)
         q = urllib.parse.parse_qs(url.query)
         try:
+            if url.path == "/api/lock":
+                _folder, stem = self._stem_args(q)
+                on = (q.get("on") or ["1"])[0] == "1"
+                note = (q.get("note") or [""])[0].replace("\n", " ")[:200]
+                set_lock(self.app.project.lock_file, stem, on, note)
+                return self._json({"locked": on, "file": str(self.app.project.lock_file)})
+            if url.path == "/api/realign":
+                folder, stem = self._stem_args(q)
+                if not _mfa_busy.acquire(blocking=False):
+                    return self._err(409, "MFA is already running")
+                try:
+                    tg = realign(self.app.project, folder, stem)
+                finally:
+                    _mfa_busy.release()
+                return self._send(200, tg.encode("utf-8"), "text/plain; charset=utf-8")
             if url.path == "/api/save":
                 folder, stem = self._stem_args(q)
                 kind = (q.get("kind") or [""])[0]

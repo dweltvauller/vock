@@ -26,6 +26,9 @@ const S = {
   play: { on: false, src: null, ctxStart: 0, offset: 0, pos: 0 },
   lastFrame: -1,
   headInfo: "",
+  locks: new Set(),     // stems listed in mfa_lock.cfg
+  realigned: false,     // current TextGrid came from "Re-align with MFA"
+  mfaBusy: false,
 };
 let screen = null, pal = null, actx = null;
 
@@ -835,6 +838,10 @@ function renderDirty() {
   $("saveLip").disabled = !S.lip || !target;
   $("saveTg").disabled = !S.tg || !target;
   $("saveTxt").disabled = !target;
+  $("realignBtn").disabled = !target || S.mfaBusy || !(S.speech[S.folder]?.[S.stem] || []).includes("wav");
+  $("realignBtn").title = $("realignBtn").disabled && target && !S.mfaBusy
+    ? "No work/wav/<stem>.wav for this line (run vock.py --steps wav)"
+    : "Save the TXT, then align work/wav/<stem>.wav against it alone with MFA (like mfa_verify.py). The result loads as an unsaved TextGrid.";
   $("saveLip").title = target ? `Write ${target}.lip into the project` : "Pick a line to save into the project, or download";
   $("saveTg").title = target ? `Write ${target}.TextGrid into the project` : "Pick a line to save into the project, or download";
   $("dlLip").disabled = !S.lip;
@@ -861,7 +868,106 @@ function renderFiles() {
   if (S.lip && S.lip.events.length + 1 <= 5) warns.push("5 markers or fewer: the engine logs \"Too few markers to stop speech\"");
   if (S.headInfo) warns.push(S.headInfo);
   $("warnings").innerHTML = warns.map((w) => `<li>${esc(w)}</li>`).join("");
+  const locked = S.stem && S.locks.has(S.stem);
+  $("lockInfo").innerHTML = !S.stem ? "—" : locked
+    ? '<span class="locked">locked</span> · vock.py keeps this TextGrid'
+    : "not locked · vock.py's mfa step re-aligns it";
+  $("lockBtn").textContent = locked ? "Unlock" : "Lock";
+  $("lockBtn").disabled = !S.stem;
+  renderAlignCheck();
   renderDirty();
+}
+
+// ─── TXT vs TextGrid check ───────────────────────────────────────────────────
+// Tokens: (sound-tags) whole, everything else split on non-alphanumerics. MFA splits
+// hyphens and drops or merges apostrophes, so comparing these runs clean on every
+// unedited vock-fo2 line.
+
+function alignTokens(s) {
+  return [...s.toLowerCase().matchAll(/\([^()\s]*\)|[a-z0-9]+/g)].map((m) => m[0]);
+}
+
+function diffTokens(a, b) {
+  const n = a.length, m = b.length;
+  const L = Array.from({ length: n + 1 }, () => new Uint16Array(m + 1));
+  for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) {
+    L[i][j] = a[i] === b[j] ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
+  }
+  const ops = [];
+  let i = 0, j = 0;
+  while (i < n || j < m) {
+    if (i < n && j < m && a[i] === b[j]) { i++; j++; }
+    else if (j < m && (i >= n || L[i][j + 1] >= L[i + 1][j])) ops.push({ op: "del", w: b[j++] });
+    else ops.push({ op: "add", w: a[i++] });
+  }
+  return ops;
+}
+
+function renderAlignCheck() {
+  const box = $("alignCheck");
+  const words = findTier(S.tg, /^words?$/i);
+  if (!words) { box.innerHTML = '<li class="info">No TextGrid words tier.</li>'; return; }
+  const tgWords = words.items.map((it) => it.text).filter(Boolean);
+  const ops = diffTokens(alignTokens(S.txt), alignTokens(tgWords.join(" ")));
+  const items = ops.map((o) => o.op === "add"
+    ? `<li class="add" title="In the TXT, not in the TextGrid">+ ${esc(o.w)}</li>`
+    : `<li class="del" title="In the TextGrid, not in the TXT">− ${esc(o.w)}</li>`);
+  // Words MFA didn't know: their span holds an "spn" phone.
+  const phones = findTier(S.tg, /^phones?$/i);
+  if (phones) {
+    for (const w of words.items) {
+      if (w.text && phones.items.some((p) => p.text.toLowerCase() === "spn" && p.xmin >= w.xmin - 1e-6 && p.xmax <= w.xmax + 1e-6)) {
+        items.push(`<li class="unk" title="MFA aligned this as spoken noise: add it to dictionaries/custom.*.dict">? ${esc(w.text)} (not in dictionary)</li>`);
+      }
+    }
+  }
+  box.innerHTML = items.length ? items.join("")
+    : '<li class="ok">✓ TXT matches the TextGrid words</li>';
+  if (ops.length) {
+    box.insertAdjacentHTML("afterbegin", `<li class="info">${ops.length} difference(s): + only in TXT, − only in TextGrid. Re-align or edit the tiers.</li>`);
+  }
+}
+
+// ─── MFA re-align and lock ───────────────────────────────────────────────────
+
+async function realignLine() {
+  if (!S.stem || S.mfaBusy) return;
+  if (S.dirty.tg && !confirm("Discard the unsaved TextGrid edits and re-align?")) return;
+  if (S.dirty.txt) await save("txt");
+  if (S.dirty.txt) return;  // save failed
+  S.mfaBusy = true;
+  $("realignBtn").disabled = true;
+  const t0 = Date.now();
+  status(`Running MFA on ${S.stem}… (usually 30–60 s)`);
+  try {
+    const r = await fetch(`/api/realign?folder=${S.folder}&stem=${S.stem}`, { method: "POST" });
+    const body = await r.text();
+    if (!r.ok) throw new Error(JSON.parse(body).error);
+    const tg = parseTextGrid(body);
+    mutate("tg", () => {
+      S.tg = tg;
+      S.tgLabel = `${S.stem}.TextGrid (re-aligned, unsaved)`;
+      S.sel = null;
+    });
+    S.realigned = true;
+    status(`MFA done in ${((Date.now() - t0) / 1000).toFixed(0)} s. Review it, then Save the TextGrid.`);
+    if (S.lip && confirm("Rebuild the LIP from the new TextGrid?")) rebuildLip();
+  } catch (e) {
+    status(`Re-align failed: ${e.message}`, true);
+  } finally {
+    S.mfaBusy = false;
+    $("realignBtn").disabled = false;
+  }
+}
+
+async function setLock(on, note = "") {
+  if (!S.stem) return;
+  const r = await fetch(`/api/lock?folder=${S.folder}&stem=${S.stem}&on=${on ? 1 : 0}&note=${encodeURIComponent(note)}`, { method: "POST" });
+  const j = await r.json();
+  if (!r.ok) { status(`Lock failed: ${j.error}`, true); return; }
+  if (on) S.locks.add(S.stem); else S.locks.delete(S.stem);
+  renderFiles();
+  status(`${S.stem} ${on ? "added to" : "removed from"} ${j.file}`);
 }
 
 function refreshAll() {
@@ -963,7 +1069,7 @@ async function loadLine(folder, stem) {
   S.lip = null; S.tg = null; S.audio = null; S.txt = "";
   S.lipLabel = S.tgLabel = "";
   S.dirty = { lip: false, tg: false, txt: false };
-  S.undo = []; S.redo = []; S.sel = null;
+  S.undo = []; S.redo = []; S.sel = null; S.realigned = false;
   try { localStorage.setItem("lipstudio.last", JSON.stringify({ folder, stem })); } catch { /* storage off */ }
   status(`Loading ${stem}…`);
   const kinds = S.speech[folder]?.[stem] || [];
@@ -1090,6 +1196,15 @@ async function save(kind) {
   if (kinds && !kinds.includes(kind)) kinds.push(kind);
   renderDirty();
   status(`Saved ${j.saved}`);
+  if (kind === "textgrid") {
+    if ($("lockOnSave").checked && !S.locks.has(S.stem)) {
+      await setLock(true, S.realigned ? "re-aligned alone in lip_studio" : "TextGrid hand-edited in lip_studio");
+      status(`Saved ${j.saved} and locked it in mfa_lock.cfg`);
+    }
+    S.realigned = false;
+    S.tgLabel = `${S.stem}.TextGrid`;
+    renderFiles();
+  }
 }
 
 const anyDirty = () => S.dirty.lip || S.dirty.tg || S.dirty.txt;
@@ -1138,7 +1253,13 @@ function wire() {
   $("moodSel").onchange = applyHead;
   $("bgSel").onchange = applyBackground;
 
-  $("txtArea").addEventListener("input", (e) => setText(e.target.value));
+  $("txtArea").addEventListener("input", (e) => { setText(e.target.value); renderAlignCheck(); });
+  $("realignBtn").onclick = realignLine;
+  $("lockBtn").onclick = () => {
+    const on = !S.locks.has(S.stem);
+    if (!on && !confirm(`Unlock ${S.stem}? The next vock.py mfa run will re-align it and overwrite the TextGrid.`)) return;
+    setLock(on, on ? "locked in lip_studio" : "");
+  };
   $("optionText").addEventListener("input", (e) => { screen.optionText = e.target.value; screen.render(); });
   $("saveTxt").onclick = () => save("txt");
   $("dlTxt").onclick = () => download(`${S.stem || "line"}.txt`, encodeCp1252(S.txt), "text/plain");
@@ -1248,7 +1369,8 @@ async function boot() {
   });
   screen.render();
 
-  const [speech, heads] = await Promise.all([fetchJson("/api/speech"), fetchJson("/api/heads")]);
+  const [speech, heads, locks] = await Promise.all([fetchJson("/api/speech"), fetchJson("/api/heads"), fetchJson("/api/locks")]);
+  S.locks = new Set(locks);
   S.speech = speech;
   S.heads = heads.heads;
   S.backgrounds = heads.backgrounds;

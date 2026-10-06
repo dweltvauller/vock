@@ -61,7 +61,10 @@
       <div class="row btns">
         <button id="saveTxt">Save TXT</button>
         <button id="dlTxt">Download</button>
+        <button id="realignBtn" title="Save the TXT, then align work/wav/&lt;stem&gt;.wav against it alone with MFA (like mfa_verify.py). The result loads as an unsaved TextGrid.">Re-align with MFA</button>
       </div>
+      <div class="note">TXT vs TextGrid words</div>
+      <ul class="align" id="alignCheck"></ul>
     </details>
 
     <details open class="panel">
@@ -72,7 +75,9 @@
           <td><button id="saveLip">Save</button><button id="dlLip">⇩</button></td></tr>
         <tr><th>TextGrid <span class="dirty" id="tgDirty"></span></th><td id="tgInfo">—</td>
           <td><button id="saveTg">Save</button><button id="dlTg">⇩</button></td></tr>
+        <tr><th>MFA lock</th><td id="lockInfo">—</td><td><button id="lockBtn">Lock</button></td></tr>
       </table>
+      <label class="chk" title="A locked line is skipped by vock.py's mfa step, so a hand-edited or re-aligned TextGrid isn't overwritten on the next pipeline run"><input type="checkbox" id="lockOnSave" checked> lock in mfa_lock.cfg when saving a TextGrid</label>
       <div class="row btns">
         <button id="useWav" title="Play work/wav/&lt;stem&gt;.wav instead of the ACM">Use WAV</button>
         <button id="useAcm" title="Play the ACM the game plays">Use ACM</button>

@@ -69,6 +69,13 @@ table.files td:last-child { text-align: right; white-space: nowrap; }
 table.files td button { padding: 1px 7px; margin-left: 3px; }
 .warnings { margin: 6px 0 0; padding-left: 18px; color: var(--amber); font-size: 12px; }
 .warnings:empty { display: none; }
+.align { margin: 4px 0 0; padding-left: 18px; font-size: 12px; max-height: 140px; overflow: auto; }
+.align li.ok { color: var(--accent); list-style: none; margin-left: -18px; }
+.align li.add { color: var(--amber); }
+.align li.del { color: var(--red); }
+.align li.unk { color: #9fb4ff; }
+.align li.info { color: var(--muted); list-style: none; margin-left: -18px; }
+.locked { color: var(--amber); }
 .inspector { display: grid; grid-template-columns: auto 1fr; gap: 5px 10px; align-items: center; }
 .inspector .note { grid-column: 1 / -1; margin: 0; }
 .inspector .k { color: var(--muted); }
