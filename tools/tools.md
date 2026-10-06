@@ -254,4 +254,36 @@ Sound tags such as `(dry-cough)`, `[laughs]` or `*Cough*` are removed from the t
 | H | tongue up | L | 5 |
 | X | rest | SIL | 0 |
 
-Output never touches `data/`. To try a line in game, copy its `.lip` over `data/sound/speech/<folder>/<stem>.lip`.
+Output never touches `data/`. To try a line in game, copy its `.lip` over `data/sound/speech/<folder>/<stem>.lip`, or preview it first with `lip_preview.py`.
+
+---
+
+## lip_preview.py
+
+Renders a line's lip-sync to an MP4 with its audio, so a `.lip` can be checked without packing the DAT and playing the game. Several `.lip` files render side by side over the same audio, one labelled panel each, e.g. the MFA version next to a `rhubarb_lip.py` version.
+
+The head is drawn the way fallout2-ce does it: each LIP phoneme picks a frame of `<head><g|n|b>p.frm` through `_head_phoneme_lookup`, held until the next marker, bottom-aligned in the 388x200 dialog window. The strip under each panel shows the frame slot in use.
+
+**Dependencies:** Pillow, `ffmpeg` / `ffprobe` on `PATH`.
+
+**Configuration:** Read from `vock.cfg`, same as the tools above. Head FRMs come from the project's `art/heads` (plus any `--art` folders). The palette is `--pal`, else `color.pal` in a heads folder's data root, else `../dat/master/color.pal` (extracted `master.dat`).
+
+**Usage:**
+```
+python3 tools/lip_preview.py bgjes18                                     # shipped .lip
+python3 tools/lip_preview.py bgjes18 ../vock-fo2/work/rhubarb/bgjes18.lip --labels MFA Rhubarb
+python3 tools/lip_preview.py bgjes18 --mood bad                          # bad-mood frames
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `lips` | required | `.lip` paths or audio tags (tag = `data/sound/speech/<folder>/<tag>.lip`) |
+| `--wav PATH` | `work/wav/<stem>.wav` | Audio to play under the panels |
+| `--head NAME` | stem without digits | Head FRM prefix, e.g. `bgjes` |
+| `--mood` | `neutral` | `good`, `neutral` or `bad` lip-sync frames |
+| `--labels` | each `.lip`'s folder | Panel labels |
+| `--out PATH` | `<project>/work/preview/<stem>.mp4` | Output video |
+| `--fps`, `--scale` | `30`, `2` | Frame rate and pixel scale |
+| `--art DIR` | none | Extra heads folder to search (repeatable), e.g. Talking Heads art |
+| `--pal PATH` | see above | `color.pal` |
+| `--project DIR` | `project_root` | Project to read from |
