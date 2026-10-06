@@ -210,3 +210,48 @@ python3 tools/float_scan.py --all          # also list dual-use TH lines
 - `OK` (`--all`): dual-use tag outside `float_filter.cfg`. Has a LIP, plays in both places.
 
 **Limits:** Only literal msg ids, the script's own `#define` constants and `random(a,b)` / `floater_rand(a,b)` ranges are resolved, and only against the script's own MSG. Lines from another script's MSG (`message_str(SCRIPT_X, n)`) and computed ids are not seen. It does not know whether a call site is live, so a reply inside dead code (e.g. `kctorr.ssl`'s `else if (0)` branch) still reports as an `ERROR`. Check each hit in the script before changing the filter.
+
+---
+
+## rhubarb_lip.py
+
+Builds a `.lip` straight from the audio with [Rhubarb Lip Sync](https://github.com/DanielSWolf/rhubarb-lip-sync), as an alternative to the MFA `lip` step. MFA can only move the mouth for phones it places, so breaths, coughs and wheezes, or a word it parks in the wrong pause, get no mouth movement or the wrong one. Rhubarb reads mouth shapes from the sound itself, so every noise the speaker makes moves the mouth where it happens.
+
+**Dependencies:** the `rhubarb` binary (release zip from GitHub) on `PATH` or passed with `--rhubarb`; imports `write_lip` / `load_phoneme_module` from `vock.py`.
+
+**Configuration:** Read from `vock.cfg`, same as the tools above: WAVs from `work/wav` (`layout = data`) or `./wav`, dialog text from `data/sound/speech/<folder>/` or `./txt`.
+
+**Usage:**
+```
+python3 tools/rhubarb_lip.py bgjes18               # one line, by audio tag
+python3 tools/rhubarb_lip.py bgjes18 bgjes19       # several lines
+python3 tools/rhubarb_lip.py path/to/line.wav      # any 16-bit PCM WAV
+python3 tools/rhubarb_lip.py bgjes18 -r phonetic   # ignore the dialog text
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `lines` | required | Audio tags or WAV paths |
+| `-r`, `--recognizer` | `pocketSphinx` with text, else `phonetic` | Rhubarb recognizer. `phonetic` is language-independent and ignores the text |
+| `--floor DB` | `-45` | Shapes quieter than this dBFS RMS become rest (`off` to disable) |
+| `--out DIR` | `<project>/work/rhubarb` | Output folder for `<stem>.lip` and `<stem>.tsv` (Rhubarb's raw shapes) |
+| `--project DIR` | `project_root` | Project to read WAVs and text from |
+| `--rhubarb PATH` | `rhubarb` | Rhubarb binary |
+
+Sound tags such as `(dry-cough)`, `[laughs]` or `*Cough*` are removed from the text before it goes to Rhubarb. A line with only sound tags uses the phonetic recognizer.
+
+**Shape mapping:** each Rhubarb shape is written as the ARPAbet phone closest to it, so it shows the same talking-head frame an MFA phone of that shape would:
+
+| Shape | Mouth | Phone | Head frame |
+|---|---|---|---|
+| A | closed | M | 6 |
+| B | slightly open, teeth | S | 2 |
+| C | open | EH | 3 |
+| D | wide open | AA | 1 |
+| E | slightly rounded | UH | 8 |
+| F | puckered | UW | 7 |
+| G | teeth on lip | F | 4 |
+| H | tongue up | L | 5 |
+| X | rest | SIL | 0 |
+
+Output never touches `data/`. To try a line in game, copy its `.lip` over `data/sound/speech/<folder>/<stem>.lip`.
