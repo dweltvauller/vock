@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LIP Studio</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">LIP&nbsp;Studio</div>
+  <div class="picker">
+    <label>Speech <select id="folderSel" title="Speech folder (data/sound/speech/&lt;folder&gt;)"></select></label>
+    <button id="prevLine" title="Previous line (PgUp)">&#9664;</button>
+    <select id="stemSel" title="Line"></select>
+    <button id="nextLine" title="Next line (PgDn)">&#9654;</button>
+    <span id="stemKinds" class="kinds"></span>
+  </div>
+  <div class="spacer"></div>
+  <button id="openFiles" title="Open .lip, .TextGrid, .txt, .acm/.wav, .frm files (or drop them anywhere)">Open files…</button>
+  <input id="fileInput" type="file" multiple hidden>
+  <span id="status" class="status"></span>
+</header>
+
+<main class="layout">
+  <section class="stage">
+    <div class="screenWrap" id="screenWrap">
+      <canvas id="screen" width="640" height="480"></canvas>
+    </div>
+    <div class="transport">
+      <button id="playBtn" class="big" title="Play / pause (Space)">&#9654;</button>
+      <button id="stopBtn" title="Stop and rewind (Home)">&#9632;</button>
+      <label class="chk"><input type="checkbox" id="loopChk"> loop</label>
+      <label>speed <select id="rateSel">
+        <option value="1">1×</option><option value="0.75">0.75×</option>
+        <option value="0.5">0.5×</option><option value="0.25">0.25×</option></select></label>
+      <label>scale <select id="scaleSel">
+        <option value="1">1×</option><option value="1.5">1.5×</option>
+        <option value="2" selected>2×</option><option value="fit">fit</option></select></label>
+      <span class="time" id="timeLbl">0.000 / 0.000</span>
+      <span class="readout" id="readout"></span>
+    </div>
+    <div class="frames" id="frameStrip" title="Head frames 0–8. The engine maps each LIP code to one of these."></div>
+  </section>
+
+  <aside class="side">
+    <details open class="panel">
+      <summary>Talking head</summary>
+      <div class="row"><label>Head <select id="headSel"></select></label>
+        <label>Mood <select id="moodSel">
+          <option value="np">neutral (np)</option><option value="gp">good (gp)</option><option value="bp">bad (bp)</option>
+        </select></label></div>
+      <div class="row"><label>Background <select id="bgSel"></select></label></div>
+      <div class="note" id="headInfo"></div>
+    </details>
+
+    <details open class="panel">
+      <summary>Text <span class="dirty" id="txtDirty"></span></summary>
+      <textarea id="txtArea" rows="5" spellcheck="true" placeholder="Reply text (the line's .txt)"></textarea>
+      <div class="row"><label class="grow">Player option <input id="optionText" placeholder="(empty)"></label></div>
+      <div class="row btns">
+        <button id="saveTxt">Save TXT</button>
+        <button id="dlTxt">Download</button>
+      </div>
+    </details>
+
+    <details open class="panel">
+      <summary>Files</summary>
+      <table class="files">
+        <tr><th>Audio</th><td id="audioInfo">—</td><td></td></tr>
+        <tr><th>LIP <span class="dirty" id="lipDirty"></span></th><td id="lipInfo">—</td>
+          <td><button id="saveLip">Save</button><button id="dlLip">⇩</button></td></tr>
+        <tr><th>TextGrid <span class="dirty" id="tgDirty"></span></th><td id="tgInfo">—</td>
+          <td><button id="saveTg">Save</button><button id="dlTg">⇩</button></td></tr>
+      </table>
+      <div class="row btns">
+        <button id="useWav" title="Play work/wav/&lt;stem&gt;.wav instead of the ACM">Use WAV</button>
+        <button id="useAcm" title="Play the ACM the game plays">Use ACM</button>
+      </div>
+      <ul class="warnings" id="warnings"></ul>
+    </details>
+
+    <details open class="panel">
+      <summary>Selection</summary>
+      <div id="inspector" class="inspector"><span class="note">Click an event or interval in the timeline.</span></div>
+    </details>
+  </aside>
+</main>
+
+<section class="timelineWrap">
+  <div class="toolbar">
+    <button id="zoomIn" title="Zoom in (+ / Ctrl+wheel)">＋</button>
+    <button id="zoomOut" title="Zoom out (−)">－</button>
+    <button id="zoomFit" title="Fit whole line">Fit</button>
+    <span class="sep"></span>
+    <button id="insertEv" title="Insert LIP event at playhead (I)">Insert event</button>
+    <button id="deleteSel" title="Delete selected event / boundary (Del)">Delete</button>
+    <button id="splitIv" title="Split selected TextGrid interval at playhead (S)">Split</button>
+    <button id="mergeIv" title="Merge selected interval with the next one (M)">Merge</button>
+    <span class="sep"></span>
+    <button id="rebuildLip" title="Regenerate LIP events from the phones tier, same mapping as vock.py">TextGrid → LIP</button>
+    <button id="newLip" title="Start an empty LIP for this audio">New LIP</button>
+    <button id="fitEnd" title="Set LIP end marker to the audio length">End = audio</button>
+    <span class="sep"></span>
+    <button id="undoBtn" title="Undo (Ctrl+Z)">Undo</button>
+    <button id="redoBtn" title="Redo (Ctrl+Y)">Redo</button>
+    <label class="chk" title="Snap dragged boundaries to boundaries on other rows"><input type="checkbox" id="snapChk" checked> snap</label>
+    <span class="spacer"></span>
+    <span class="hint">Drag boundaries · click to seek · wheel scrolls · Ctrl+wheel zooms · Alt+←/→ nudges</span>
+  </div>
+  <div class="timeline" id="timelineBox">
+    <canvas id="timeline"></canvas>
+  </div>
+  <input type="range" id="hscroll" min="0" max="1000" value="0" step="1">
+</section>
+
+<div id="dropHint" class="dropHint">Drop .lip / .TextGrid / .txt / .acm / .wav / .frm</div>
+
+<script type="module" src="/static/app.js"></script>
+</body>
+</html>

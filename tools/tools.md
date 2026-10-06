@@ -210,3 +210,50 @@ python3 tools/float_scan.py --all          # also list dual-use TH lines
 - `OK` (`--all`): dual-use tag outside `float_filter.cfg`. Has a LIP, plays in both places.
 
 **Limits:** Only literal msg ids, the script's own `#define` constants and `random(a,b)` / `floater_rand(a,b)` ranges are resolved, and only against the script's own MSG. Lines from another script's MSG (`message_str(SCRIPT_X, n)`) and computed ids are not seen. It does not know whether a call site is live, so a reply inside dead code (e.g. `kctorr.ssl`'s `else if (0)` branch) still reports as an `ERROR`. Check each hit in the script before changing the filter.
+
+---
+
+## lip_studio.py
+
+Browser-based LIP / TextGrid editor with a Fallout 2 talking-head preview. Pick a voiced line and it loads the ACM, `.lip`, `.TextGrid` and `.txt`, then plays the speech while the talking head lip-syncs on a copy of the in-game dialogue screen. Edit LIP events or TextGrid intervals on the timeline and you see the result straight away.
+
+**Dependencies:** None (stdlib only). Needs a browser: open the printed URL in Chrome, Edge or Firefox on Windows. WSL forwards `localhost`.
+
+**Configuration:** Read from `vock.cfg`, same as the tools above (`project_root`, `layout`, `[paths]`, `language`). Game art is looked up in this order, first hit wins, names case-insensitive:
+
+1. the project's own `data/` (or the project root for `layout = flat`), so `data/art/heads/` overrides win
+2. `[lip_studio] sources`: a comma-separated list of folders or `.dat` files, relative to `vock.cfg`. Default: `../dat/th, ../dat/master` (the extracted Talking Heads and `master.dat` trees next to `vock/`)
+
+Needed art: `color.pal`, `font1.aaf`, `art/intrface/{alltlk,di_talk,hilight1,hilight2}.frm`, `art/heads/*`, `art/backgrnd/*`. The background for each head is guessed from `start_gdialog`-style calls (`HEAD_X, BACKGROUND_Y`) in `<project>/scripts_src` plus `[lip_studio] scripts` (default `../compile/headers`, which holds the `BACKGROUND_*` defines). You can change it in the page; the page remembers your choice per head.
+
+**Usage:**
+```
+python3 tools/lip_studio.py                          # opens http://127.0.0.1:8642/
+python3 tools/lip_studio.py --port 9000 --no-browser
+python3 tools/lip_studio.py --source /mnt/c/Fallout/Fallout2-CE/master.dat
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `--port N` | `8642` | Port to serve on |
+| `--host H` | `127.0.0.1` | Interface to bind |
+| `--project DIR` | `project_root` from `vock.cfg` | Project to read and save |
+| `--source PATH` | none | Extra art folder or `.dat`, searched before `[lip_studio] sources`; repeatable |
+| `--scripts DIR` | none | Extra script/header folder for the background guess; repeatable |
+| `--no-browser` | off | Don't open a browser |
+
+**What it shows.** The screen is drawn the way `fallout2-ce` draws it (`game_dialog.cc`), into a 640x480 palette buffer:
+- `alltlk.frm` and `di_talk.frm`, the head window at (126,14), the background FRM, the head frame placed with the FRM shift and the running per-frame x offset, the two highlight overlays blended through the grey/olive blend tables, and the 8 frame pieces drawn back over the corners.
+- The reply text from the `.txt`, in `font1.aaf` green, wrapped with the engine's `display_msg` rules (first line indented 10 px). Click the top or bottom half of the reply box to scroll, like in game. "Player option" draws an option line in the options box.
+- The mouth frame follows the engine's `lipsTicker`: phoneme *i* becomes current once the audio byte position is strictly past marker *i*, and the code maps to a frame through `_head_phoneme_lookup`.
+
+**Editing.**
+- LIP lane: blocks coloured by head frame (0-8) with the code name. Drag a boundary to move an event. Click an event, then pick its code from the inspector or the code grid. Click a frame in the strip under the screen to give the selected event a code for that frame. `I` inserts an event at the playhead (code taken from the phones tier there). `Del` deletes. `Alt+←/→` nudges 10 ms (`Shift` for 1 ms). The red line is the end marker; you can drag it too.
+- TextGrid tiers: drag boundaries, edit labels in the inspector, `S` splits the selected interval at the playhead, `M` merges it with the next one, `Del` removes its left boundary.
+- `TextGrid → LIP` rebuilds the events from the phones tier with the same phoneme table and de-duplication as `vock.py` (identical output for every vock-fo2 line). `New LIP` starts an empty one. `End = audio` moves the end marker to the audio length.
+- Snap (on by default) pulls dragged boundaries onto boundaries in the other rows.
+- `Space` play/pause, `Home` rewind, `Ctrl+Z`/`Ctrl+Y` undo/redo, `Ctrl+S` saves everything changed, `PgUp`/`PgDn` previous/next line, `Ctrl+wheel` zoom.
+
+**Files.** Save writes into the project: `.lip` and `.txt` to `data/sound/speech/<folder>/`, `.TextGrid` to `work/textgrid/` (flat layout: the `[paths]` folders). The download buttons save a copy instead. A loaded LIP is written back byte-identical when unchanged (header fields, marker types and the name field are kept), checked against all 879 vock-fo2 and 1029 `master.dat` LIPs. `Open files…` (or drag and drop) takes loose `.lip`, `.TextGrid`, `.txt`, `.acm`, `.wav`/`.mp3`/`.ogg`, and `.frm` files: a 388x200 single-frame FRM becomes the background, any other FRM the head.
+
+**Audio.** The page decodes ACM itself with a port of the engine's decoder (`sound_decoder.cc`). Speech ACMs say stereo in the header but hold mono samples, and the engine plays them as mono, so the page does too. ffmpeg 8's `interplayacm` decoder fails on snd2acm output, so it isn't used. `Use WAV` plays `work/wav/<stem>.wav` instead; the ACM starts about 80 samples (4 ms) later than the WAV because of the encoder delay.
