@@ -292,6 +292,14 @@ function drawTimeline() {
     c.fillStyle = "rgba(255,255,255,.08)";
     c.fillRect(x, RULER_H, w - x, h - RULER_H);
   }
+  // Boundaries moving together with the dragged one.
+  if (drag?.group?.length > 1) {
+    const gx = Math.round(xOf(boundaryTime(drag.group[0]))) + 0.5;
+    c.strokeStyle = "#f2b33d";
+    c.lineWidth = 2;
+    c.beginPath(); c.moveTo(gx, RULER_H); c.lineTo(gx, h); c.stroke();
+    c.lineWidth = 1;
+  }
   // Playhead.
   const px = Math.round(xOf(playPos())) + 0.5;
   c.strokeStyle = "#3cf06e";
@@ -414,11 +422,12 @@ function boundaryAt(x, row) {
   return null;
 }
 
+// exclude: row keys ("lip", "tier<N>") whose boundaries are being moved.
 function snapTargets(exclude) {
   const out = [];
-  if (S.lip && exclude !== "lip") S.lip.events.forEach((e) => out.push(e.pos / LIP_BYTES_PER_SEC));
+  if (S.lip && !exclude.includes("lip")) S.lip.events.forEach((e) => out.push(e.pos / LIP_BYTES_PER_SEC));
   S.tg?.tiers.forEach((t, ti) => {
-    if (t.cls !== "IntervalTier" || exclude === "tier" + ti) return;
+    if (t.cls !== "IntervalTier" || exclude.includes("tier" + ti)) return;
     t.items.forEach((it) => out.push(it.xmin));
   });
   return out;
@@ -429,6 +438,65 @@ function snap(t, exclude) {
   let best = t, bd = 6 / S.view.pps;
   for (const s of snapTargets(exclude)) if (Math.abs(s - t) < bd) { bd = Math.abs(s - t); best = s; }
   return best;
+}
+
+// ─── Linked boundaries ───────────────────────────────────────────────────────
+// A boundary is { kind: "lip", i } (LIP event i >= 1) or { kind: "tier", t, i }
+// (start of interval i >= 1 in tier t). With "link" on, moving one moves every
+// boundary on the other rows that sits at the same time.
+
+const LINK_TOL = 0.001;  // LIP positions are whole bytes, TextGrid times are floats
+
+function boundaryTime(m) {
+  return m.kind === "lip" ? S.lip.events[m.i].pos / LIP_BYTES_PER_SEC : S.tg.tiers[m.t].items[m.i].xmin;
+}
+
+function boundaryRange(m) {
+  if (m.kind === "lip") {
+    const ev = S.lip.events;
+    return [(ev[m.i - 1].pos + 1) / LIP_BYTES_PER_SEC,
+      ((m.i + 1 < ev.length ? ev[m.i + 1].pos : S.lip.end) - 1) / LIP_BYTES_PER_SEC];
+  }
+  const items = S.tg.tiers[m.t].items;
+  return [items[m.i - 1].xmin + 0.001, items[m.i].xmax - 0.001];
+}
+
+function linkedGroup(m) {
+  if (!$("linkChk").checked) return [m];
+  const t0 = boundaryTime(m);
+  const out = [m];
+  if (S.lip && m.kind !== "lip") {
+    S.lip.events.forEach((e, i) => {
+      if (i > 0 && Math.abs(e.pos / LIP_BYTES_PER_SEC - t0) <= LINK_TOL) out.push({ kind: "lip", i });
+    });
+  }
+  S.tg?.tiers.forEach((tier, t) => {
+    if (tier.cls !== "IntervalTier" || (m.kind === "tier" && m.t === t)) return;
+    tier.items.forEach((it, i) => {
+      if (i > 0 && Math.abs(it.xmin - t0) <= LINK_TOL) out.push({ kind: "tier", t, i });
+    });
+  });
+  return out;
+}
+
+const groupRows = (g) => g.map((m) => (m.kind === "lip" ? "lip" : "tier" + m.t));
+
+// Moves every boundary in the group to v, clamped so no row's intervals invert.
+function moveGroup(g, v) {
+  let lo = -Infinity, hi = Infinity;
+  for (const m of g) { const [a, b] = boundaryRange(m); lo = Math.max(lo, a); hi = Math.min(hi, b); }
+  if (lo > hi) return;
+  v = Math.max(lo, Math.min(hi, v));
+  for (const m of g) {
+    if (m.kind === "lip") {
+      S.lip.events[m.i].pos = Math.round(v * LIP_BYTES_PER_SEC);
+      S.dirty.lip = true;
+    } else {
+      const items = S.tg.tiers[m.t].items;
+      items[m.i - 1].xmax = v; items[m.i].xmin = v;
+      S.dirty.tg = true;
+    }
+  }
 }
 
 function rowAt(y) { return rows().find((r) => y >= r.y && y < r.y + r.h); }
@@ -442,6 +510,7 @@ tl.addEventListener("mousedown", (e) => {
   const b = boundaryAt(x, row);
   if (b) {
     drag = { ...b, moved: false, before: snapshot(), clickT: t, row };
+    if (b.kind !== "lipEnd") drag.group = linkedGroup(b);
     if (b.kind === "lip") S.sel = { kind: "lip", i: b.i };
     if (b.kind === "tier") S.sel = { kind: "tier", t: b.t, i: b.i };
     renderInspector();
@@ -475,21 +544,12 @@ window.addEventListener("mousemove", (e) => {
   const t = Math.max(0, tOf(x));
   if (drag.kind === "seek") { seek(t); return; }
   drag.moved = true;
-  if (drag.kind === "lip") {
-    const ev = S.lip.events, i = drag.i;
-    const lo = ev[i - 1].pos + 1, hi = (i + 1 < ev.length ? ev[i + 1].pos : S.lip.end) - 1;
-    ev[i].pos = Math.max(lo, Math.min(hi, Math.round(snap(t, "lip") * LIP_BYTES_PER_SEC)));
-    S.dirty.lip = true;
-  } else if (drag.kind === "lipEnd") {
+  if (drag.kind === "lipEnd") {
     const ev = S.lip.events;
-    S.lip.end = Math.max(ev[ev.length - 1].pos + 1, Math.round(snap(t, "lip") * LIP_BYTES_PER_SEC));
+    S.lip.end = Math.max(ev[ev.length - 1].pos + 1, Math.round(snap(t, ["lip"]) * LIP_BYTES_PER_SEC));
     S.dirty.lip = true;
-  } else if (drag.kind === "tier") {
-    const items = S.tg.tiers[drag.t].items, i = drag.i;
-    const lo = items[i - 1].xmin + 0.001, hi = items[i].xmax - 0.001;
-    const v = Math.max(lo, Math.min(hi, snap(t, "tier" + drag.t)));
-    items[i - 1].xmax = v; items[i].xmin = v;
-    S.dirty.tg = true;
+  } else {
+    moveGroup(drag.group, snap(t, groupRows(drag.group)));
   }
   drawTimeline();
   renderInspector();
@@ -692,20 +752,10 @@ function selectRelative(d) {
 
 function nudge(sec) {
   const s = S.sel;
-  if (!s) return;
-  if (s.kind === "lip" && s.i > 0) {
-    mutate("lip", () => {
-      const ev = S.lip.events;
-      const lo = ev[s.i - 1].pos + 1, hi = (s.i + 1 < ev.length ? ev[s.i + 1].pos : S.lip.end) - 1;
-      ev[s.i].pos = Math.max(lo, Math.min(hi, ev[s.i].pos + Math.round(sec * LIP_BYTES_PER_SEC)));
-    });
-  } else if (s.kind === "tier" && s.i > 0) {
-    mutate("tg", () => {
-      const items = S.tg.tiers[s.t].items;
-      const v = Math.max(items[s.i - 1].xmin + 0.001, Math.min(items[s.i].xmax - 0.001, items[s.i].xmin + sec));
-      items[s.i - 1].xmax = v; items[s.i].xmin = v;
-    });
-  }
+  if (!s || s.i <= 0) return;
+  const m = s.kind === "lip" ? { kind: "lip", i: s.i } : { kind: "tier", t: s.t, i: s.i };
+  const g = linkedGroup(m);
+  mutate(s.kind === "lip" ? "lip" : "tg", () => moveGroup(g, boundaryTime(m) + sec));
 }
 
 function ensureVisible() {
