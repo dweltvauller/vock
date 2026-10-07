@@ -264,3 +264,86 @@ python3 tools/lip_studio.py --source /mnt/c/Fallout/Fallout2-CE/master.dat
 **Files.** Save writes into the project: `.lip` and `.txt` to `data/sound/speech/<folder>/`, `.TextGrid` to `work/textgrid/` (flat layout: the `[paths]` folders). The download buttons save a copy instead. A loaded LIP is written back byte-identical when unchanged (header fields, marker types and the name field are kept), checked against all 879 vock-fo2 and 1029 `master.dat` LIPs. `Open files…` (or drag and drop) takes loose `.lip`, `.TextGrid`, `.txt`, `.acm`, `.wav`/`.mp3`/`.ogg`, and `.frm` files: a 388x200 single-frame FRM becomes the background, any other FRM the head.
 
 **Audio.** The page decodes ACM itself with a port of the engine's decoder (`sound_decoder.cc`). Speech ACMs say stereo in the header but hold mono samples, and the engine plays them as mono, so the page does too. ffmpeg 8's `interplayacm` decoder fails on snd2acm output, so it isn't used. `Use WAV` plays `work/wav/<stem>.wav` instead; the ACM starts about 80 samples (4 ms) later than the WAV because of the encoder delay.
+
+---
+
+# Experimental
+
+Tools under test. They are not part of the production pipeline: `vock.py` does not call them, and their output goes to `work/`, never `data/`. Shipped `.lip` files still come from the MFA `lip` step. Options and output may change. A tool moves up to the main list once its results have been checked in game.
+
+---
+
+## rhubarb_lip.py (experimental)
+
+Builds a `.lip` straight from the audio with [Rhubarb Lip Sync](https://github.com/DanielSWolf/rhubarb-lip-sync), as an alternative to the MFA `lip` step. MFA can only move the mouth for phones it places, so breaths, coughs and wheezes, or a word it parks in the wrong pause, get no mouth movement or the wrong one. Rhubarb reads mouth shapes from the sound itself, so every noise the speaker makes moves the mouth where it happens.
+
+**Dependencies:** the `rhubarb` binary (release zip from GitHub) on `PATH` or passed with `--rhubarb`; imports `write_lip` / `load_phoneme_module` from `vock.py`.
+
+**Configuration:** Read from `vock.cfg`, same as the tools above: WAVs from `work/wav` (`layout = data`) or `./wav`, dialog text from `data/sound/speech/<folder>/` or `./txt`.
+
+**Usage:**
+```
+python3 tools/rhubarb_lip.py bgjes18               # one line, by audio tag
+python3 tools/rhubarb_lip.py bgjes18 bgjes19       # several lines
+python3 tools/rhubarb_lip.py path/to/line.wav      # any 16-bit PCM WAV
+python3 tools/rhubarb_lip.py bgjes18 -r phonetic   # ignore the dialog text
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `lines` | required | Audio tags or WAV paths |
+| `-r`, `--recognizer` | `pocketSphinx` with text, else `phonetic` | Rhubarb recognizer. `phonetic` is language-independent and ignores the text |
+| `--floor DB` | `-45` | Shapes quieter than this dBFS RMS become rest (`off` to disable) |
+| `--out DIR` | `<project>/work/rhubarb` | Output folder for `<stem>.lip` and `<stem>.tsv` (Rhubarb's raw shapes) |
+| `--project DIR` | `project_root` | Project to read WAVs and text from |
+| `--rhubarb PATH` | `rhubarb` | Rhubarb binary |
+
+Sound tags such as `(dry-cough)`, `[laughs]` or `*Cough*` are removed from the text before it goes to Rhubarb. A line with only sound tags uses the phonetic recognizer.
+
+**Shape mapping:** each Rhubarb shape is written as the ARPAbet phone closest to it, so it shows the same talking-head frame an MFA phone of that shape would:
+
+| Shape | Mouth | Phone | Head frame |
+|---|---|---|---|
+| A | closed | M | 6 |
+| B | slightly open, teeth | S | 2 |
+| C | open | EH | 3 |
+| D | wide open | AA | 1 |
+| E | slightly rounded | UH | 8 |
+| F | puckered | UW | 7 |
+| G | teeth on lip | F | 4 |
+| H | tongue up | L | 5 |
+| X | rest | SIL | 0 |
+
+Output never touches `data/`. To try a line in game, copy its `.lip` over `data/sound/speech/<folder>/<stem>.lip`, or preview it first with `lip_preview.py`.
+
+---
+
+## lip_preview.py (experimental)
+
+Renders a line's lip-sync to an MP4 with its audio, so a `.lip` can be checked without packing the DAT and playing the game. Several `.lip` files render side by side over the same audio, one labelled panel each, e.g. the MFA version next to a `rhubarb_lip.py` version.
+
+The head is drawn the way fallout2-ce does it: each LIP phoneme picks a frame of `<head><g|n|b>p.frm` through `_head_phoneme_lookup`, held until the next marker, bottom-aligned in the 388x200 dialog window. The strip under each panel shows the frame slot in use.
+
+**Dependencies:** Pillow, `ffmpeg` / `ffprobe` on `PATH`.
+
+**Configuration:** Read from `vock.cfg`, same as the tools above. Head FRMs come from the project's `art/heads` (plus any `--art` folders). The palette is `--pal`, else `color.pal` in a heads folder's data root, else `../dat/master/color.pal` (extracted `master.dat`).
+
+**Usage:**
+```
+python3 tools/lip_preview.py bgjes18                                     # shipped .lip
+python3 tools/lip_preview.py bgjes18 ../vock-fo2/work/rhubarb/bgjes18.lip --labels MFA Rhubarb
+python3 tools/lip_preview.py bgjes18 --mood bad                          # bad-mood frames
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `lips` | required | `.lip` paths or audio tags (tag = `data/sound/speech/<folder>/<tag>.lip`) |
+| `--wav PATH` | `work/wav/<stem>.wav` | Audio to play under the panels |
+| `--head NAME` | stem without digits | Head FRM prefix, e.g. `bgjes` |
+| `--mood` | `neutral` | `good`, `neutral` or `bad` lip-sync frames |
+| `--labels` | each `.lip`'s folder | Panel labels |
+| `--out PATH` | `<project>/work/preview/<stem>.mp4` | Output video |
+| `--fps`, `--scale` | `30`, `2` | Frame rate and pixel scale |
+| `--art DIR` | none | Extra heads folder to search (repeatable), e.g. Talking Heads art |
+| `--pal PATH` | see above | `color.pal` |
+| `--project DIR` | `project_root` | Project to read from |
