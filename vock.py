@@ -114,6 +114,7 @@ import struct
 import subprocess
 import sys
 import time
+import wave
 
 _CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vock.cfg")
 _parser = configparser.ConfigParser(inline_comment_prefixes=("#",))
@@ -630,10 +631,24 @@ def find_snd2acm(hint: str = None) -> str | None:
     return None
 
 def wav_to_acm(snd2acm_bin: str, wav_path: str, acm_path: str) -> None:
-    cmd = [snd2acm_bin, "-16", wav_path, acm_path, "-q0"]
+    # snd2acm's -16 mode reads raw PCM, so a WAV passed as-is gets its header
+    # (44+ bytes, more with a LIST chunk) encoded as audio: an audible click at
+    # the start and every line shifted late by the header length. Its -WAV mode
+    # rejects WAVs with extra chunks, so strip the header and feed raw PCM.
+    with wave.open(wav_path, "rb") as w:
+        if w.getsampwidth() != 2 or w.getnchannels() != 1:
+            raise RuntimeError(f"'{wav_path}' must be 16-bit mono PCM for snd2acm")
+        pcm = w.readframes(w.getnframes())
+    pcm_path = os.path.splitext(acm_path)[0] + ".pcm"
+    with open(pcm_path, "wb") as f:
+        f.write(pcm)
+    cmd = [snd2acm_bin, "-16", pcm_path, acm_path, "-q0"]
     if os.name != "nt" and snd2acm_bin.lower().endswith(".exe"):
         cmd.insert(0, "wine")
-    r = subprocess.run(cmd, capture_output=True, text=True)
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True)
+    finally:
+        os.remove(pcm_path)
     if r.returncode != 0:
         raise RuntimeError(f"snd2acm failed:\n{r.stderr.strip()}")
     if not os.path.isfile(acm_path) or os.path.getsize(acm_path) == 0:
