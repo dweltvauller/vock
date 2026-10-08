@@ -5,12 +5,12 @@
 (wheeze) HH IY1 Z
 (wheeze-out) HH AA1 S
 (wheeze-shaky) HH IY1 HH IY1 Z
-(dry-cough) K AH1 F
+(dry-cough) K AH1 HH
 (wet-cough) HH AE1 K
 (deep-cough) K AO1 HH
 (cough-fit) K AH1 K AH1 K AH1
 (short-gasp) HH AE1
-(gasp) HH AH0
+(gasp) HH AE1
 (grunt) HH AH1
 (sigh) HH AA1
 (snore) HH R AA0
