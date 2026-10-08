@@ -102,6 +102,7 @@
     <button id="deleteSel" title="Delete selected event / boundary (Del)">Delete</button>
     <button id="splitIv" title="Split selected TextGrid interval at playhead (S)">Split</button>
     <button id="mergeIv" title="Merge selected interval with the next one (M)">Merge</button>
+    <button id="gapIv" title="Insert a pause where the word at the playhead touches the next/previous word (G)">Insert gap</button>
     <span class="sep"></span>
     <button id="rebuildLip" title="Regenerate LIP events from the phones tier, same mapping as vock.py">TextGrid → LIP</button>
     <button id="newLip" title="Start an empty LIP for this audio">New LIP</button>
@@ -112,7 +113,7 @@
     <label class="chk" title="Snap dragged boundaries to boundaries on other rows"><input type="checkbox" id="snapChk" checked> snap</label>
     <label class="chk" title="Dragging or nudging a boundary also moves the boundaries on the other rows that sit at the same time"><input type="checkbox" id="linkChk"> link</label>
     <span class="spacer"></span>
-    <span class="hint">Drag boundaries · click to seek · wheel scrolls · Ctrl+wheel zooms · Alt+←/→ nudges</span>
+    <span class="hint">Drag boundaries · Shift+drag moves a word · G inserts a pause · click to seek · wheel scrolls · Ctrl+wheel zooms · Alt+←/→ nudges</span>
   </div>
   <div class="timeline" id="timelineBox">
     <canvas id="timeline"></canvas>
