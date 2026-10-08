@@ -504,12 +504,129 @@ function moveGroup(g, v) {
 
 function rowAt(y) { return rows().find((r) => y >= r.y && y < r.y + r.h); }
 
+// ─── Moving a whole interval ─────────────────────────────────────────────────
+// Shift+drag on an interval moves its start and end, every boundary on the other
+// tiers inside it (or at its edges) and every LIP event in its span by the same
+// amount. The neighbouring intervals stretch or shrink; the move stops 1 ms short
+// of collapsing an interval on any row.
+
+function blockMembers(t, i) {
+  const items = S.tg.tiers[t].items;
+  if (i <= 0 || i >= items.length - 1) return null;   // first / last interval: an edge is pinned
+  const a = items[i].xmin, b = items[i].xmax;
+  const inSpan = (x) => x >= a - LINK_TOL && x <= b + LINK_TOL;
+  const members = [];
+  let lo = -Infinity, hi = Infinity;
+  S.tg.tiers.forEach((tier, tt) => {
+    if (tier.cls !== "IntervalTier") return;
+    const its = tier.items;
+    const moved = its.map((it, j) => j > 0 && inSpan(it.xmin));
+    its.forEach((it, j) => {
+      if (!moved[j]) return;
+      let p = j - 1; while (p > 0 && moved[p]) p--;
+      let n = j + 1; while (n < its.length && moved[n]) n++;
+      const prev = its[p].xmin, next = n < its.length ? its[n].xmin : its[its.length - 1].xmax;
+      lo = Math.max(lo, prev + 0.001 - it.xmin);
+      hi = Math.min(hi, next - 0.001 - it.xmin);
+      members.push({ kind: "tier", t: tt, i: j, t0: it.xmin });
+    });
+  });
+  if (S.lip) {
+    const ev = S.lip.events;
+    const moved = ev.map((e, j) => j > 0 && inSpan(e.pos / LIP_BYTES_PER_SEC));
+    ev.forEach((e, j) => {
+      if (!moved[j]) return;
+      let p = j - 1; while (p > 0 && moved[p]) p--;
+      let n = j + 1; while (n < ev.length && moved[n]) n++;
+      const next = n < ev.length ? ev[n].pos : S.lip.end;
+      lo = Math.max(lo, (ev[p].pos + 1 - e.pos) / LIP_BYTES_PER_SEC);
+      hi = Math.min(hi, (next - 1 - e.pos) / LIP_BYTES_PER_SEC);
+      members.push({ kind: "lip", i: j, t0: e.pos / LIP_BYTES_PER_SEC });
+    });
+  }
+  return { members, lo: Math.min(lo, 0), hi: Math.max(hi, 0) };
+}
+
+function moveBlock(block, d) {
+  d = Math.max(block.lo, Math.min(block.hi, d));
+  for (const m of block.members) {
+    const v = m.t0 + d;
+    if (m.kind === "lip") {
+      S.lip.events[m.i].pos = Math.round(v * LIP_BYTES_PER_SEC);
+      S.dirty.lip = true;
+    } else {
+      const items = S.tg.tiers[m.t].items;
+      items[m.i - 1].xmax = v; items[m.i].xmin = v;
+      S.dirty.tg = true;
+    }
+  }
+}
+
+// ─── Inserting a pause between two touching words ────────────────────────────
+// With the playhead inside a word that touches the next (or previous) word, G ends
+// the word at the playhead (or starts it there) and puts an empty interval in the
+// freed time, on every interval tier. The word's phones are squeezed proportionally
+// into its new span, so they keep their order and relative lengths.
+
+function insertGap() {
+  if (!S.tg) { status("No TextGrid loaded", true); return; }
+  const words = S.tg.tiers.find((tr) => tr.cls === "IntervalTier" && /^words?$/i.test(tr.name))
+    ?? (S.sel?.kind === "tier" ? S.tg.tiers[S.sel.t] : null);
+  if (!words) { status("No words tier: select an interval on the tier to work on", true); return; }
+  const p = playPos();
+  const items = words.items;
+  const j = items.findIndex((it) => p >= it.xmin && p < it.xmax);
+  if (j < 0 || !items[j].text) { status("Put the playhead inside a word", true); return; }
+  const w = items[j];
+  const touchesPrev = j > 0 && items[j - 1].text;
+  const touchesNext = j + 1 < items.length && items[j + 1].text;
+  if (!touchesPrev && !touchesNext) { status(`"${w.text}" already has a pause on both sides: drag its boundary instead`, true); return; }
+  // Gap goes on the touching side nearer the playhead.
+  let side = touchesNext && (!touchesPrev || w.xmax - p <= p - w.xmin) ? "end" : "start";
+  const [s, e] = [w.xmin, w.xmax];
+  if (side === "end" && p - s < 0.01) { status("Playhead too close to the word start", true); return; }
+  if (side === "start" && e - p < 0.01) { status("Playhead too close to the word end", true); return; }
+  const [s2, e2] = side === "end" ? [s, p] : [p, e];
+  const gap = side === "end" ? [p, e] : [s, p];
+  const map = (x) => s2 + ((x - s) * (e2 - s2)) / (e - s);
+  mutate("tg", () => {
+    for (const tier of S.tg.tiers) {
+      if (tier.cls !== "IntervalTier") continue;
+      const its = tier.items;
+      for (const it of its) {
+        // Half-open so the neighbouring word's own edge stays put.
+        if (it.xmin >= s - LINK_TOL && it.xmin < e - LINK_TOL) it.xmin = map(it.xmin);
+        if (it.xmax > s + LINK_TOL && it.xmax <= e + LINK_TOL) it.xmax = map(it.xmax);
+      }
+      const k = its.findIndex((it) => Math.abs(it.xmax - gap[0]) <= LINK_TOL);
+      if (k >= 0 && k + 1 < its.length && Math.abs(its[k + 1].xmin - gap[1]) <= LINK_TOL) {
+        its.splice(k + 1, 0, { xmin: gap[0], xmax: gap[1], text: "" });
+      }
+    }
+    const t = S.tg.tiers.indexOf(words);
+    S.sel = { kind: "tier", t, i: words.items.findIndex((it) => Math.abs(it.xmin - gap[0]) <= LINK_TOL && !it.text) };
+  });
+  status(`Pause of ${Math.round((gap[1] - gap[0]) * 1000)} ms ${side === "end" ? "after" : "before"} "${w.text}". Use TextGrid → LIP to update the mouth.`);
+}
+
 tl.addEventListener("mousedown", (e) => {
   const rect = tl.getBoundingClientRect();
   const x = e.clientX - rect.left, y = e.clientY - rect.top;
   const row = rowAt(y);
   if (!row) return;
   const t = tOf(x);
+  if (e.shiftKey && row.kind === "tier") {
+    const i = S.tg.tiers[row.t].items.findIndex((it) => t >= it.xmin && t < it.xmax);
+    if (i >= 0) {
+      S.sel = { kind: "tier", t: row.t, i };
+      const block = blockMembers(row.t, i);
+      if (!block) { status("The first and last intervals can't move: drag their inner boundary instead", true); renderInspector(); drawTimeline(); return; }
+      drag = { kind: "block", block, moved: false, before: snapshot(), clickT: t, row };
+      renderInspector();
+      drawTimeline();
+      return;
+    }
+  }
   const b = boundaryAt(x, row);
   if (b) {
     drag = { ...b, moved: false, before: snapshot(), clickT: t, row };
@@ -541,13 +658,17 @@ window.addEventListener("mousemove", (e) => {
   const x = e.clientX - rect.left, y = e.clientY - rect.top;
   if (!drag) {
     const row = rowAt(y);
-    tl.style.cursor = row && x >= 0 && x <= rect.width && boundaryAt(x, row) ? "ew-resize" : "crosshair";
+    const inside = row && x >= 0 && x <= rect.width;
+    tl.style.cursor = inside && e.shiftKey && row.kind === "tier" ? "move"
+      : inside && boundaryAt(x, row) ? "ew-resize" : "crosshair";
     return;
   }
   const t = Math.max(0, tOf(x));
   if (drag.kind === "seek") { seek(t); return; }
   drag.moved = true;
-  if (drag.kind === "lipEnd") {
+  if (drag.kind === "block") {
+    moveBlock(drag.block, t - drag.clickT);
+  } else if (drag.kind === "lipEnd") {
     const ev = S.lip.events;
     S.lip.end = Math.max(ev[ev.length - 1].pos + 1, Math.round(snap(t, ["lip"]) * LIP_BYTES_PER_SEC));
     S.dirty.lip = true;
@@ -566,6 +687,9 @@ window.addEventListener("mouseup", () => {
   if (d.moved && d.before) {
     S.undo.push(d.before); S.redo = [];
     renderDirty();
+  } else if (d.kind === "block") {
+    // Shift+click without dragging: just select the interval.
+    seek(d.clickT);
   } else if (d.clickT !== undefined) {
     // Pressed on a boundary without dragging: treat it as a plain click.
     selectAt(d.row, d.clickT);
@@ -1285,6 +1409,7 @@ function wire() {
   $("deleteSel").onclick = deleteSelection;
   $("splitIv").onclick = splitInterval;
   $("mergeIv").onclick = mergeInterval;
+  $("gapIv").onclick = insertGap;
   $("rebuildLip").onclick = rebuildLip;
   $("newLip").onclick = makeNewLip;
   $("fitEnd").onclick = fitEnd;
@@ -1324,6 +1449,7 @@ function wire() {
       case "i": case "I": insertEvent(); break;
       case "s": case "S": splitInterval(); break;
       case "m": case "M": mergeInterval(); break;
+      case "g": case "G": insertGap(); break;
       case "+": case "=": zoomAround(1.5, tlWidth() / 2); break;
       case "-": zoomAround(1 / 1.5, tlWidth() / 2); break;
       case "PageUp": e.preventDefault(); $("prevLine").click(); break;
