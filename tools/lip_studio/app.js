@@ -603,10 +603,28 @@ function insertGap() {
         its.splice(k + 1, 0, { xmin: gap[0], xmax: gap[1], text: "" });
       }
     }
+    if (S.lip) {
+      // Same edit on the LIP lane: the word's events move with its phones, a SIL
+      // event opens the pause and the mouth shape that followed resumes at its end.
+      const B = LIP_BYTES_PER_SEC, ev = S.lip.events;
+      const resume = codeAtPos(Math.round((side === "end" ? e : s) * B) + 1);
+      for (let j = 1; j < ev.length; j++) {
+        const x = ev[j].pos / B;
+        if (x >= s - LINK_TOL && x < e - LINK_TOL) ev[j].pos = Math.round(map(x) * B);
+      }
+      const near = (pos) => ev.findIndex((v, j) => j > 0 && Math.abs(v.pos - pos) <= 1);
+      const g0 = Math.round(gap[0] * B), g1 = Math.round(gap[1] * B);
+      const k0 = near(g0);
+      if (k0 >= 0) ev[k0].code = 0; else ev.push({ code: 0, pos: g0 });
+      if (near(g1) < 0 && g1 < S.lip.end) ev.push({ code: resume, pos: g1 });
+      ev.sort((a, b) => a.pos - b.pos);
+      S.dirty.lip = true;
+    }
     const t = S.tg.tiers.indexOf(words);
     S.sel = { kind: "tier", t, i: words.items.findIndex((it) => Math.abs(it.xmin - gap[0]) <= LINK_TOL && !it.text) };
   });
-  status(`Pause of ${Math.round((gap[1] - gap[0]) * 1000)} ms ${side === "end" ? "after" : "before"} "${w.text}". Use TextGrid → LIP to update the mouth.`);
+  status(`Pause of ${Math.round((gap[1] - gap[0]) * 1000)} ms ${side === "end" ? "after" : "before"} "${w.text}"` +
+    (S.lip ? ", SIL added to the LIP." : ". Use TextGrid → LIP to update the mouth."));
 }
 
 tl.addEventListener("mousedown", (e) => {
