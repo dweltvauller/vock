@@ -381,10 +381,11 @@ function drawTierRow(c, row, w) {
   const tier = S.tg.tiers[row.t];
   c.fillStyle = "#5c6650";
   c.fillText(tier.name, 4, row.y + 8);
+  const [sa, sb] = selRange();
   tier.items.forEach((it, i) => {
     const x0 = xOf(it.xmin), x1 = xOf(it.xmax);
     if (x1 < 0 || x0 > w) return;
-    const selected = S.sel?.kind === "tier" && S.sel.t === row.t && S.sel.i === i;
+    const selected = S.sel?.kind === "tier" && S.sel.t === row.t && i >= sa && i <= sb;
     if (selected) { c.fillStyle = "rgba(242,179,61,.25)"; c.fillRect(x0, row.y, x1 - x0, row.h - 1); }
     else if (it.text) { c.fillStyle = "rgba(60,240,110,.07)"; c.fillRect(x0, row.y, x1 - x0, row.h - 1); }
     c.fillStyle = "#8fbf86";
@@ -508,12 +509,22 @@ function rowAt(y) { return rows().find((r) => y >= r.y && y < r.y + r.h); }
 // Shift+drag on an interval moves its start and end, every boundary on the other
 // tiers inside it (or at its edges) and every LIP event in its span by the same
 // amount. The neighbouring intervals stretch or shrink; the move stops 1 ms short
-// of collapsing an interval on any row.
+// of collapsing an interval on any row. Ctrl+click extends the selection to a run
+// of consecutive intervals; Shift+drag inside that run moves all of them together.
 
-function blockMembers(t, i) {
+// Selected interval range [first, last] on the selected tier (one interval unless
+// Ctrl+click extended it).
+function selRange() {
+  const s = S.sel;
+  if (s?.kind !== "tier") return [-1, -1];
+  const j = s.i2 ?? s.i;
+  return [Math.min(s.i, j), Math.max(s.i, j)];
+}
+
+function blockMembers(t, i, j = i) {
   const items = S.tg.tiers[t].items;
-  if (i <= 0 || i >= items.length - 1) return null;   // first / last interval: an edge is pinned
-  const a = items[i].xmin, b = items[i].xmax;
+  if (i <= 0 || j >= items.length - 1) return null;   // first / last interval: an edge is pinned
+  const a = items[i].xmin, b = items[j].xmax;
   const inSpan = (x) => x >= a - LINK_TOL && x <= b + LINK_TOL;
   const members = [];
   let lo = -Infinity, hi = Infinity;
@@ -633,11 +644,25 @@ tl.addEventListener("mousedown", (e) => {
   const row = rowAt(y);
   if (!row) return;
   const t = tOf(x);
+  if ((e.ctrlKey || e.metaKey) && row.kind === "tier" && S.sel?.kind === "tier" && S.sel.t === row.t) {
+    // Ctrl+click: extend the selection from the selected interval to this one.
+    const i = S.tg.tiers[row.t].items.findIndex((it) => t >= it.xmin && t < it.xmax);
+    if (i >= 0) {
+      S.sel = { kind: "tier", t: row.t, i: S.sel.i, i2: i };
+      const [a, b] = selRange();
+      status(`${b - a + 1} intervals selected: Shift+drag inside them to move them together`);
+      renderInspector();
+      drawTimeline();
+      return;
+    }
+  }
   if (e.shiftKey && row.kind === "tier") {
     const i = S.tg.tiers[row.t].items.findIndex((it) => t >= it.xmin && t < it.xmax);
     if (i >= 0) {
-      S.sel = { kind: "tier", t: row.t, i };
-      const block = blockMembers(row.t, i);
+      let [a, b] = selRange();
+      // Inside a Ctrl+click range: move the whole run. Otherwise just this interval.
+      if (S.sel?.t !== row.t || i < a || i > b) { S.sel = { kind: "tier", t: row.t, i }; a = b = i; }
+      const block = blockMembers(row.t, a, b);
       if (!block) { status("The first and last intervals can't move: drag their inner boundary instead", true); renderInspector(); drawTimeline(); return; }
       drag = { kind: "block", block, moved: false, before: snapshot(), clickT: t, row };
       renderInspector();
@@ -706,7 +731,7 @@ window.addEventListener("mouseup", () => {
     S.undo.push(d.before); S.redo = [];
     renderDirty();
   } else if (d.kind === "block") {
-    // Shift+click without dragging: just select the interval.
+    // Shift+click without dragging: just select the interval (or keep the range).
     seek(d.clickT);
   } else if (d.clickT !== undefined) {
     // Pressed on a boundary without dragging: treat it as a plain click.
