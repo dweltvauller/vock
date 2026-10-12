@@ -347,6 +347,49 @@ def load_phoneme_table(mfa_name: str) -> dict:
     return dict(getattr(mod, "PHONEME_TABLE", {}))
 
 
+# ─── Pronunciations (the dictionaries MFA aligns with) ───────────────────────
+# Insert word in the page asks here for a word's phones. The custom dictionary
+# wins over MFA's own, so (wheeze) and the like get the phones vock aligns them
+# with. Loaded on first use: the MFA dictionary is ~200k lines.
+
+_pron: dict[str, list[list[str]]] | None = None
+_pron_lock = threading.Lock()
+
+
+def _read_dict(path: str, out: dict[str, list[list[str]]]) -> None:
+    """Add path's entries to out. MFA lines are 'word<TAB>probs…<TAB>phones';
+    custom lines are 'word phone phone…'. Words already in out are kept."""
+    seen = set(out)
+    with open(path, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            line = line.split("#", 1)[0].strip()
+            if not line:
+                continue
+            if "\t" in line:
+                parts = line.split("\t")
+                word, phones = parts[0], parts[-1].split()
+            else:
+                word, *phones = line.split()
+            word = word.lower()
+            if not phones or word in seen:
+                continue
+            prons = out.setdefault(word, [])
+            if phones not in prons:
+                prons.append(phones)
+
+
+def pronunciations(mfa_name: str, word: str) -> list[list[str]]:
+    global _pron
+    with _pron_lock:
+        if _pron is None:
+            vock = vock_module()
+            _pron = {}
+            for path in (vock.resolve_custom_dict(mfa_name, None), vock.find_mfa_dict(mfa_name)):
+                if path:
+                    _read_dict(path, _pron)
+    return _pron.get(word.lower(), [])
+
+
 # ─── Head → background guess from scripts ────────────────────────────────────
 
 DEFINE_RE = re.compile(r"^\s*#define\s+((?:HEAD|BACKGROUND)_[A-Z0-9_]+)\s+\(?\s*(-?\d+)\s*\)?", re.M)
@@ -493,6 +536,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self._json(app.heads())
             if url.path == "/api/locks":
                 return self._json(sorted(read_locks(app.project.lock_file)))
+            if url.path == "/api/pron":
+                word = (q.get("word") or [""])[0].strip()
+                if not word or len(word) > 64:
+                    return self._err(400, "bad word")
+                return self._json({"word": word, "prons": pronunciations(app.project.mfa_name, word)})
             if url.path == "/api/game":
                 rel = (q.get("path") or [""])[0]
                 if ".." in rel.replace("\\", "/").split("/"):

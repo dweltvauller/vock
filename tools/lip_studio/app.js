@@ -638,6 +638,77 @@ function insertGap() {
     (S.lip ? ", SIL added to the LIP." : ". Use TextGrid → LIP to update the mouth."));
 }
 
+// ─── Inserting a word with its phones ────────────────────────────────────────
+// W puts a word into the selected span (the selected interval, or a Ctrl+click run,
+// on any tier) on the words tier and fills the same span on the phones tier with
+// the word's phones, vowels getting twice a consonant's share. The phones come from
+// the dictionaries MFA aligns with (custom one first); "word: PH PH" gives them by
+// hand. Whatever the span held is replaced. An interval that straddles a span edge
+// keeps its outside part, but only a pause may be cut that way.
+
+const VOWEL_RE = /\d$|[aeiouyæɑɐɒɔəɛɜɪʊʌøœɤɯɨʉɵ]/i;
+
+function spanCutError(tier, x0, x1) {
+  for (const it of tier.items) {
+    const cut = (x) => it.xmin < x - LINK_TOL && it.xmax > x + LINK_TOL;
+    if ((cut(x0) || cut(x1)) && it.text) return `The span cuts through "${it.text}" on the ${tier.name} tier`;
+  }
+  return null;
+}
+
+function spanReplace(tier, x0, x1, fill) {
+  const its = tier.items;
+  const i = its.findIndex((it) => it.xmax > x0 + LINK_TOL);
+  let j = i;
+  while (j < its.length && its[j].xmin < x1 - LINK_TOL) j++;
+  const mid = [];
+  if (its[i].xmin < x0 - LINK_TOL) mid.push({ ...its[i], xmax: x0 });
+  else if (i > 0) its[i - 1].xmax = x0;   // edge on a boundary: close any sub-ms gap
+  mid.push(...fill);
+  if (its[j - 1].xmax > x1 + LINK_TOL) mid.push({ ...its[j - 1], xmin: x1 });
+  else if (j < its.length) its[j].xmin = x1;
+  its.splice(i, j - i, ...mid);
+}
+
+async function insertWord() {
+  if (!S.tg) { status("No TextGrid loaded", true); return; }
+  const words = findTier(S.tg, /^words?$/i), phones = findTier(S.tg, /^phones?$/i);
+  if (!words || !phones) { status("Insert word needs a words and a phones tier", true); return; }
+  const [a, b] = selRange();
+  if (a < 0) { status("Select the interval the word goes in (split a pause with S first to use part of it)", true); return; }
+  const sel = S.tg.tiers[S.sel.t].items, x0 = sel[a].xmin, x1 = sel[b].xmax;
+  // Offer what the words tier holds there now, e.g. a word MFA left without phones.
+  const cur = words.items.filter((it) => it.text && it.xmin < x1 - LINK_TOL && it.xmax > x0 + LINK_TOL)
+    .map((it) => it.text).join(" ");
+  const input = prompt(`Word for ${fmtT(x0)}–${fmtT(x1)} s (or "word: PH PH …" to give the phones)`, cur);
+  if (input == null) return;
+  const m = input.match(/^\s*([^:]*?)\s*(?::(.*))?$/);
+  const word = m[1].toLowerCase();
+  if (!word || /\s/.test(word)) { status("One word at a time", true); return; }
+  let ph = (m[2] ?? "").trim().split(/\s+/).filter(Boolean);
+  if (!ph.length) {
+    try { ph = (await fetchJson("/api/pron?word=" + encodeURIComponent(word))).prons[0] ?? []; }
+    catch (e) { status(e.message, true); return; }
+    if (!ph.length) { status(`"${word}" is not in the dictionary: type "${word}: PH PH …"`, true); return; }
+  }
+  const err = spanCutError(words, x0, x1) || spanCutError(phones, x0, x1);
+  if (err) { status(err, true); return; }
+  const wts = ph.map((p) => (VOWEL_RE.test(p) ? 2 : 1)), sum = wts.reduce((s, w) => s + w, 0);
+  if ((x1 - x0) / sum < 0.005) { status(`${Math.round((x1 - x0) * 1000)} ms is too short for ${ph.length} phones`, true); return; }
+  mutate("tg", () => {
+    spanReplace(words, x0, x1, [{ xmin: x0, xmax: x1, text: word }]);
+    let t = x0;
+    spanReplace(phones, x0, x1, ph.map((p, k) => {
+      const e = k === ph.length - 1 ? x1 : t + ((x1 - x0) * wts[k]) / sum;
+      const it = { xmin: t, xmax: e, text: p };
+      t = e;
+      return it;
+    }));
+    S.sel = { kind: "tier", t: S.tg.tiers.indexOf(words), i: words.items.findIndex((it) => Math.abs(it.xmin - x0) <= LINK_TOL) };
+  });
+  status(`Inserted "${word}" (${ph.join(" ")}). Use TextGrid → LIP to update the mouth.`);
+}
+
 tl.addEventListener("mousedown", (e) => {
   const rect = tl.getBoundingClientRect();
   const x = e.clientX - rect.left, y = e.clientY - rect.top;
@@ -1453,6 +1524,7 @@ function wire() {
   $("splitIv").onclick = splitInterval;
   $("mergeIv").onclick = mergeInterval;
   $("gapIv").onclick = insertGap;
+  $("wordIv").onclick = insertWord;
   $("rebuildLip").onclick = rebuildLip;
   $("newLip").onclick = makeNewLip;
   $("fitEnd").onclick = fitEnd;
@@ -1493,6 +1565,7 @@ function wire() {
       case "s": case "S": splitInterval(); break;
       case "m": case "M": mergeInterval(); break;
       case "g": case "G": insertGap(); break;
+      case "w": case "W": insertWord(); break;
       case "+": case "=": zoomAround(1.5, tlWidth() / 2); break;
       case "-": zoomAround(1 / 1.5, tlWidth() / 2); break;
       case "PageUp": e.preventDefault(); $("prevLine").click(); break;
